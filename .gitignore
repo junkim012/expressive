@@ -1,0 +1,16 @@
+# Foundry
+contracts/cache/
+contracts/out/
+contracts/lib/
+
+# Foundry broadcast logs
+!contracts/broadcast/
+contracts/broadcast/*/31337/
+contracts/broadcast/**/dry-run/
+
+# Docs
+contracts/docs/
+
+# Dotenv
+contracts/.env
+.env
