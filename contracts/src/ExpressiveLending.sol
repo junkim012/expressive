@@ -51,6 +51,7 @@ contract ExpressiveLending is ERC721 {
     error ExcessCollateralAmount();
     error NothingToRedeem();
     error LoanNotClosed();
+    error NotNFTOwner();
 
     // ─────────────────────────────────────────────────────────────────────────
     // Events
@@ -90,9 +91,13 @@ contract ExpressiveLending is ERC721 {
         uint256 indexed borrowOrderId,
         address lender,
         address borrower,
-        uint256 principal,
+        uint256 matchAmount,      // gross amount before solver fee
+        uint256 principal,        // net amount after solver fee
         uint256 rate,
-        uint256 maturityDate
+        uint256 ltv,
+        uint256 lltv,
+        uint256 maturityDate,
+        uint256 originationDate
     );
 
     event BatchExecuted(uint256 indexed windowId, address indexed solver, uint256 totalSurplus, uint256 pairCount);
@@ -539,7 +544,7 @@ contract ExpressiveLending is ERC721 {
     /// @notice Redeem a lender NFT for the claimable borrow-asset amount.
     ///         Loan must be Repaid or Liquidated (fully closed).
     function redeem(uint256 tokenId) external {
-        require(ownerOf(tokenId) == msg.sender, "not NFT owner");
+        if (ownerOf(tokenId) != msg.sender) revert NotNFTOwner();
         uint256 loanId = nftToLoan[tokenId];
         Loan storage loan = loans[loanId];
 
@@ -593,6 +598,17 @@ contract ExpressiveLending is ERC721 {
     /// @notice Check whether a loan's collateral is currently above the LLTV threshold.
     function isHealthy(uint256 loanId) external view returns (bool) {
         return _isHealthy(loans[loanId]);
+    }
+
+    /// @notice Return the numeric health factor scaled by BASIS_POINTS.
+    ///         10_000 = collateral value exactly equals the LLTV threshold (liquidation boundary).
+    ///         > 10_000 = healthy; < 10_000 = undercollateralised.
+    ///         Returns type(uint256).max when the LLTV threshold is zero.
+    function getHealthFactor(uint256 loanId) external view returns (uint256) {
+        Loan storage loan = loans[loanId];
+        uint256 threshold = Math.mulDiv(loan.principal, loan.lltv, BASIS_POINTS);
+        if (threshold == 0) return type(uint256).max;
+        return Math.mulDiv(_computeLoanCollateralValue(loan), BASIS_POINTS, threshold);
     }
 
     /// @notice Number of pairs in the current winning batch.
@@ -750,7 +766,7 @@ contract ExpressiveLending is ERC721 {
 
         emit LoanCreated(
             loanId, pair.lendOrderId, pair.borrowOrderId,
-            L.owner, B.owner, principal, rate, maturity
+            L.owner, B.owner, matchAmount, principal, rate, ltv, lltv, maturity, block.timestamp
         );
     }
 

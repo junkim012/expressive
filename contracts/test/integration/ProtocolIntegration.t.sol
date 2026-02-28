@@ -588,11 +588,13 @@ contract ProtocolIntegrationTest is Test {
         assertEq(loan.principal, principal, "principal correct");
         assertEq(loan.rate,      rate,      "rate is midpoint");
 
-        // Advance exactly 180 days
-        skip(180 days);
+        // Advance to 1 second before maturity (maturityDate = executionTime + 180 days).
+        // Repaying exactly at maturityDate reverts with LoanMatured, so we repay 1s early.
+        uint256 elapsed = 180 days - 1;
+        skip(elapsed);
 
         // Expected interest: (principal * rate / BP) * elapsed / SECS_PER_YEAR
-        uint256 expectedInterest = _interest(principal, rate, 180 days);
+        uint256 expectedInterest = _interest(principal, rate, elapsed);
         uint256 expectedTotal    = principal + expectedInterest;
 
         // View function matches
@@ -853,7 +855,7 @@ contract ProtocolIntegrationTest is Test {
 
         // lender1 cannot redeem (no longer owns NFT)
         vm.prank(lender1);
-        vm.expectRevert("not NFT owner");
+        vm.expectRevert(ExpressiveLending.NotNFTOwner.selector);
         protocol.redeem(0);
 
         // nftBuyer redeems successfully

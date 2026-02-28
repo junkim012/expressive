@@ -530,7 +530,7 @@ contract ExpressiveLendingTest is Test {
 
     function test_MarkDefaulted_revertsBeforeMaturity() public {
         uint256 loanId = _createActiveLoan(400, 700, 1_000e6);
-        vm.expectRevert(ExpressiveLending.LoanNotActive.selector);
+        vm.expectRevert(ExpressiveLending.LoanNotMatured.selector);
         protocol.markDefaulted(loanId);
     }
 }
