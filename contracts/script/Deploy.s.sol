@@ -102,10 +102,11 @@ contract Deploy is Script {
 
         vm.stopBroadcast();
 
+        // HUMAN NOTE: SKIP write since json writes throw errors.
         // ── 5. Write deployment artifact ──────────────────────────────────────
         // Written to <repo-root>/deployments/<chainId>.json so that the
         // frontend (app/) and backend can both import it from a known path.
-        _writeDeployment(deployer, usdc, wbtc, weth, wbtcOracle, wethOracle, protocol);
+        // _writeDeployment(deployer, usdc, wbtc, weth, wbtcOracle, wethOracle, protocol);
 
         // ── 6. Console summary ────────────────────────────────────────────────
         console.log("=== Expressive Lending Testnet Deployment ===");
