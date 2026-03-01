@@ -136,7 +136,7 @@ export function BurnerPanel() {
       <div className="grid grid-cols-2 gap-1">
         <span className="text-[9px] text-terminal-muted uppercase tracking-wider">Shielded MON</span>
         <span className={`text-[10px] font-mono text-right ${shieldedMon > 0n ? "text-terminal-green" : "text-terminal-muted"}`}>
-          {formatTokenAmount(shieldedMon.toString(), 18)}
+          {formatTokenAmount(shieldedMon.toString(), 18, 4)}
         </span>
       </div>
 
@@ -144,21 +144,19 @@ export function BurnerPanel() {
       {!addrsReady ? (
         <span className="text-[10px] text-terminal-muted">Deriving addresses...</span>
       ) : (
-        <div className="flex flex-col gap-0.5">
+        <div
+          className="grid gap-x-2 gap-y-0.5 items-center"
+          style={{ gridTemplateColumns: `1rem 1fr repeat(${colCount}, auto)` }}
+        >
           {/* Header */}
-          <div
-            className="grid gap-2"
-            style={{ gridTemplateColumns: `1rem 1fr repeat(${colCount}, auto)` }}
-          >
-            <span className="text-[9px] text-terminal-muted uppercase tracking-wider">#</span>
-            <span className="text-[9px] text-terminal-muted uppercase tracking-wider">Address</span>
-            <span className="text-[9px] text-terminal-muted uppercase tracking-wider text-right">MON</span>
-            {erc20Assets.map((a) => (
-              <span key={a.address} className="text-[9px] text-terminal-muted uppercase tracking-wider text-right">
-                {a.symbol}
-              </span>
-            ))}
-          </div>
+          <span className="text-[9px] text-terminal-muted uppercase tracking-wider">#</span>
+          <span className="text-[9px] text-terminal-muted uppercase tracking-wider">Address</span>
+          <span className="text-[9px] text-terminal-muted uppercase tracking-wider text-right">MON</span>
+          {erc20Assets.map((a) => (
+            <span key={a.address} className="text-[9px] text-terminal-muted uppercase tracking-wider text-right">
+              {a.symbol}
+            </span>
+          ))}
           {/* Rows */}
           {INDICES.map((i) => {
             const addr = burnerAddrs[i];
@@ -166,29 +164,23 @@ export function BurnerPanel() {
             const nativeBal = bals?.native ?? 0n;
             if (!addr) return null;
             return (
-              <div
-                key={i}
-                className="grid gap-2 items-center"
-                style={{ gridTemplateColumns: `1rem 1fr repeat(${colCount}, auto)` }}
-              >
-                <span className="text-[10px] text-terminal-muted">{i}</span>
-                <span className="text-[10px] font-mono text-terminal-muted truncate" title={addr}>
+              <>
+                <span key={`idx-${i}`} className="text-[10px] text-terminal-muted">{i}</span>
+                <span key={`addr-${i}`} className="text-[10px] font-mono text-terminal-muted truncate" title={addr}>
                   {addr.slice(0, 8)}…{addr.slice(-4)}
                 </span>
-                {/* Native MON */}
-                <span className={`text-[10px] font-mono text-right tabular-nums ${nativeBal > 0n ? "text-terminal-text" : "text-terminal-muted"}`}>
-                  {formatTokenAmount(nativeBal.toString(), 18)}
+                <span key={`mon-${i}`} className={`text-[10px] font-mono text-right tabular-nums ${nativeBal > 0n ? "text-terminal-text" : "text-terminal-muted"}`}>
+                  {formatTokenAmount(nativeBal.toString(), 18, 4)}
                 </span>
-                {/* ERC-20 tokens */}
                 {erc20Assets.map((a) => {
                   const bal = bals?.[a.address] ?? 0n;
                   return (
-                    <span key={a.address} className={`text-[10px] font-mono text-right tabular-nums ${bal > 0n ? "text-terminal-text" : "text-terminal-muted"}`}>
-                      {formatTokenAmount(bal.toString(), a.decimals)}
+                    <span key={`${i}-${a.address}`} className={`text-[10px] font-mono text-right tabular-nums ${bal > 0n ? "text-terminal-text" : "text-terminal-muted"}`}>
+                      {formatTokenAmount(bal.toString(), a.decimals, 4)}
                     </span>
                   );
                 })}
-              </div>
+              </>
             );
           })}
         </div>

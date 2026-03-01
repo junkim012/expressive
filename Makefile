@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install anvil deploy backend frontend dev staging action solver solver-logs logs test-contracts
+.PHONY: help install anvil deploy backend frontend dev staging action solver lender borrower bots solver-logs bot-logs logs test-contracts
 
 REPO_ROOT := $(shell pwd)
 
@@ -22,8 +22,12 @@ help:
 	@echo "    make staging       Start backend + frontend against Monad testnet (no Anvil)"
 	@echo "    make logs          Tail all service logs with color-coded prefixes"
 	@echo "    make solver-logs   Tail solver bot logs with color-coded prefixes"
+	@echo "    make bot-logs      Tail all bot logs (solver + lender + borrower)"
 	@echo "    make action        Run lender + borrower bots (requires make dev running)"
 	@echo "    make solver        Run 3 competing solver bots (MODE=local|staging)"
+	@echo "    make lender        Run 2 lender bots (MODE=local|staging)"
+	@echo "    make borrower      Run 2 borrower bots (MODE=local|staging)"
+	@echo "    make bots          Run all bots: 3 solver + 2 lender + 2 borrower (MODE=local|staging)"
 	@echo ""
 	@echo "  Contracts"
 	@echo "    make test          Run Foundry test suite"
@@ -63,6 +67,9 @@ logs:
 solver-logs:
 	@bash bot/solver-logs.sh
 
+bot-logs:
+	@bash bot/bot-logs.sh $(LOGS)
+
 # ── Activity bots ─────────────────────────────────────────────────────────────
 action:
 	@bash e2e/action.sh
@@ -70,6 +77,16 @@ action:
 # ── Solver bots ──────────────────────────────────────────────────────────────
 solver:
 	@bash bot/deploy-solver.sh $(or $(MODE),local)
+
+# ── Lender / Borrower / All bots ────────────────────────────────────────────
+lender:
+	@bash bot/deploy-lender.sh $(or $(MODE),local)
+
+borrower:
+	@bash bot/deploy-borrower.sh $(or $(MODE),local)
+
+bots:
+	@bash bot/deploy-bots.sh $(or $(MODE),local)
 
 # ── Contracts ─────────────────────────────────────────────────────────────────
 test:

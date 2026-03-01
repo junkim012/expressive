@@ -1,5 +1,5 @@
-# Goal
-Solver 
+# Solver Bot
+## Goal
 
 This solver bot should be deployable in both local and staging. But it should be environment-conscious. 
 
@@ -32,3 +32,15 @@ But the point is to reuse the same code for both staging and local deployments.
 For each bot, it should log its batch, the expected surplus, and confirmations for submitting a batch, confirmations for executing a batch, and what 
 
 similar to `make logs`, we should have a `make solver-logs` that allows the developer to observe. 
+
+
+# Borrow and Lend Bot
+In the /bot directory, expand it from just the solver bot to a lender and a borrower bot. 
+
+There is already an implementation of the logic in actions.sh 
+
+Keep the quantitative logic the same, except we want to abstract the logic into this bot deployment flow similar to the solver deployment flow. Such that both the borrower and lender bots can be separately invoked, and deployed to staging or local.
+
+The same staging vs. local rule for the solver applies to the Borrow and Lend Bots.
+
+Add logs on create lend/borrow order events. 

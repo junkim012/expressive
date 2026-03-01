@@ -112,13 +112,13 @@ export default function TradingDashboard() {
         className="min-w-0 bg-terminal-bg flex flex-col gap-px overflow-hidden"
         style={{ width: `${widths[2]}%` }}
       >
+        <DepositPanel />
         {mode === "public" ? (
           <div className="flex-1 min-h-0 overflow-auto">
             <MyPositions />
           </div>
         ) : (
           <>
-            <DepositPanel />
             <BurnerPanel />
             <div className="flex-1 min-h-0 overflow-auto">
               <PrivatePositions />

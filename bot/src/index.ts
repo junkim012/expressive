@@ -11,7 +11,7 @@ async function main() {
   const config = loadConfig();
   const { publicClient, walletClients } = createClients(config);
 
-  resetLogFiles();
+  resetLogFiles(['Solver-A', 'Solver-B', 'Solver-C']);
 
   const labels = ['Solver-A', 'Solver-B', 'Solver-C'] as const;
   const addresses = walletClients.map((wc) => wc.account!.address);

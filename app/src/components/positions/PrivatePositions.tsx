@@ -1,15 +1,17 @@
 "use client";
 
 import { useState } from "react";
-import { useAccount } from "wagmi";
+import { useAccount, useReadContracts } from "wagmi";
 import { useUnlink } from "@unlink-xyz/react";
 import { usePrivatePositions } from "@/hooks/usePrivatePositions";
 import { useAssets } from "@/hooks/useAssets";
-import { CONTRACT_ADDRESS, CONTRACT_ABI, ERC20_ABI, NATIVE_TOKEN, GAS_RESERVE } from "@/lib/contract";
+import { CONTRACT_ADDRESS, CONTRACT_ABI, ERC20_ABI, ORACLE_ABI, NATIVE_TOKEN, GAS_RESERVE } from "@/lib/contract";
 import { encodeBurnerCall, waitForBurnerTx, publicClient } from "@/lib/burnerClient";
 import { ensureAsset } from "@/lib/ensureAsset";
 import {
   formatRate,
+  formatLtv,
+  formatDuration,
   formatTokenAmount,
   fillPercent,
   timeRemaining,
@@ -17,48 +19,51 @@ import {
 } from "@/lib/format";
 import type { LendOrder, BorrowOrder, Loan, AssetInfo } from "@/types";
 
-// ── Sweep button ──────────────────────────────────────────────────────────────
+type Variant = "trade" | "positions";
 
-function SweepButton({
+// ── Multi-token sweep button ─────────────────────────────────────────────────
+
+function MultiSweepButton({
   burnerIndex,
   burnerAddress,
-  token,
-  decimals,
-  symbol,
+  tokens,
 }: {
   burnerIndex: number;
   burnerAddress: string;
-  token: string;
-  decimals: number;
-  symbol: string;
+  tokens: { address: string; decimals: number; symbol: string }[];
 }) {
   const { burnerGetTokenBalance, burnerSweepToPool } = useUnlink();
-  const [balance, setBalance] = useState<bigint | null>(null);
-  const [sweeping, setSweeping] = useState(false);
-  const [done, setDone] = useState(false);
+  const [balances, setBalances] = useState<(bigint | null)[] | null>(null);
+  const [sweeping, setSweeping] = useState<Set<number>>(new Set());
+  const [swept, setSwept] = useState<Set<number>>(new Set());
 
-  async function loadBalance() {
-    const b = await burnerGetTokenBalance(burnerAddress, token);
-    setBalance(b);
+  async function loadBalances() {
+    const results = await Promise.all(
+      tokens.map((t) => burnerGetTokenBalance(burnerAddress, t.address))
+    );
+    setBalances(results);
   }
 
-  async function handleSweep() {
-    if (!balance || balance === 0n) return;
-    setSweeping(true);
+  async function handleSweep(idx: number) {
+    const bal = balances?.[idx];
+    if (!bal || bal === 0n) return;
+    setSweeping((prev) => new Set(prev).add(idx));
     try {
-      await burnerSweepToPool(burnerIndex, { token, amount: balance });
-      setDone(true);
+      await burnerSweepToPool(burnerIndex, { token: tokens[idx].address, amount: bal });
+      setSwept((prev) => new Set(prev).add(idx));
     } finally {
-      setSweeping(false);
+      setSweeping((prev) => {
+        const next = new Set(prev);
+        next.delete(idx);
+        return next;
+      });
     }
   }
 
-  if (done) return <span className="text-terminal-green text-[10px]">Swept</span>;
-
-  if (balance === null) {
+  if (balances === null) {
     return (
       <button
-        onClick={loadBalance}
+        onClick={loadBalances}
         className="text-[10px] text-terminal-muted hover:text-terminal-text transition-colors"
       >
         Check balance
@@ -66,20 +71,30 @@ function SweepButton({
     );
   }
 
-  if (balance === 0n) {
-    return <span className="text-[10px] text-terminal-muted">No balance</span>;
-  }
-
   return (
-    <button
-      onClick={handleSweep}
-      disabled={sweeping}
-      className="text-[10px] text-terminal-green border border-terminal-green px-1.5 py-0.5 hover:bg-terminal-green hover:text-black transition-colors disabled:opacity-50"
-    >
-      {sweeping
-        ? "Sweeping..."
-        : `Sweep ${formatTokenAmount(balance.toString(), decimals, 2)} ${symbol}`}
-    </button>
+    <div className="flex flex-col gap-0.5">
+      {tokens.map((t, i) => {
+        const bal = balances[i];
+        if (swept.has(i)) {
+          return <span key={t.address} className="text-terminal-green text-[10px]">{t.symbol}: Swept</span>;
+        }
+        if (!bal || bal === 0n) {
+          return <span key={t.address} className="text-[10px] text-terminal-muted">{t.symbol}: No balance</span>;
+        }
+        return (
+          <button
+            key={t.address}
+            onClick={() => handleSweep(i)}
+            disabled={sweeping.has(i)}
+            className="text-[10px] text-terminal-green border border-terminal-green px-1.5 py-0.5 hover:bg-terminal-green hover:text-black transition-colors disabled:opacity-50"
+          >
+            {sweeping.has(i)
+              ? `Sweeping ${t.symbol}...`
+              : `Sweep ${formatTokenAmount(bal.toString(), t.decimals, 2)} ${t.symbol}`}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -118,7 +133,6 @@ function PrivateRepayButton({
     setError(null);
     const deps = { balances, burnerGetBalance, burnerGetTokenBalance, burnerFund, waitForConfirmation };
     try {
-      // Compute total due from on-chain
       const interest = await publicClient.readContract({
         address: CONTRACT_ADDRESS,
         abi: CONTRACT_ABI,
@@ -131,15 +145,12 @@ function PrivateRepayButton({
         (a) => a.address.toLowerCase() === loan.borrowAsset.toLowerCase()
       );
 
-      // Ensure burner has gas
       setStep("gas");
       await ensureAsset(deps, burnerIndex, burnerAddress, NATIVE_TOKEN, GAS_RESERVE, "MON");
 
-      // Ensure burner has enough borrow asset to repay
       setStep("funding");
       await ensureAsset(deps, burnerIndex, burnerAddress, loan.borrowAsset, repayAmount, borrowAssetInfo?.symbol ?? "");
 
-      // Approve
       setStep("approving");
       const { txHash: approveTx } = await burnerSend(
         burnerIndex,
@@ -152,7 +163,6 @@ function PrivateRepayButton({
       );
       await waitForBurnerTx(approveTx);
 
-      // Repay
       setStep("repaying");
       const { txHash: repayTx } = await burnerSend(
         burnerIndex,
@@ -165,7 +175,6 @@ function PrivateRepayButton({
       );
       await waitForBurnerTx(repayTx);
 
-      // Sweep returned collateral back to shielded pool
       if (borrowOrder && borrowOrder.collateralAssets.length > 0) {
         setStep("sweeping");
         for (const collateralAsset of borrowOrder.collateralAssets) {
@@ -215,11 +224,15 @@ function PrivateRedeemButton({
   burnerAddress,
   loan,
   borrowAssetInfo,
+  redeemable,
+  onRedeemed,
 }: {
   burnerIndex: number;
   burnerAddress: string;
   loan: Loan;
   borrowAssetInfo: AssetInfo | undefined;
+  redeemable: bigint | undefined;
+  onRedeemed?: () => void;
 }) {
   const {
     balances,
@@ -237,7 +250,6 @@ function PrivateRedeemButton({
     setError(null);
     const deps = { balances, burnerGetBalance, burnerGetTokenBalance, burnerFund, waitForConfirmation };
     try {
-      // Ensure burner has gas for redeem + sweep
       setStep("gas");
       await ensureAsset(deps, burnerIndex, burnerAddress, NATIVE_TOKEN, GAS_RESERVE, "MON");
 
@@ -260,7 +272,6 @@ function PrivateRedeemButton({
       );
       await waitForBurnerTx(txHash);
 
-      // Sweep redeemed borrow asset back to shielded pool
       if (borrowAssetInfo) {
         setStep("sweeping");
         const redeemed = await burnerGetTokenBalance(burnerAddress, borrowAssetInfo.address);
@@ -270,6 +281,7 @@ function PrivateRedeemButton({
       }
 
       setStep("done");
+      onRedeemed?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Redeem failed");
       setStep("idle");
@@ -277,7 +289,9 @@ function PrivateRedeemButton({
   }
 
   if (loan.status !== "repaid" && loan.status !== "liquidated") return null;
-  if (step === "done") return <span className="text-terminal-green text-[10px]">Redeemed</span>;
+  if (redeemable === undefined) return null;
+  if (redeemable === 0n) return null;
+  if (step === "done") return null;
 
   function stepLabel() {
     if (step === "gas") return "Ensuring gas...";
@@ -300,25 +314,57 @@ function PrivateRedeemButton({
   );
 }
 
-// ── Row components ────────────────────────────────────────────────────────────
+// ── Order row components ──────────────────────────────────────────────────────
 
 function PrivateLendOrderRow({
   order,
   assets,
+  variant,
 }: {
   order: LendOrder;
   assets: ReturnType<typeof useAssets>["data"];
+  variant: Variant;
 }) {
   const borrowAsset = assets?.borrowAssets.find(
     (a) => a.address.toLowerCase() === order.borrowAsset.toLowerCase()
   );
+  const dec = borrowAsset?.decimals ?? 6;
+
+  if (variant === "positions") {
+    const collateralSymbols = order.acceptableCollateral
+      .map((addr) => {
+        const ca = assets?.collateralAssets.find(
+          (a) => a.address.toLowerCase() === addr.toLowerCase()
+        );
+        return ca?.symbol ?? truncateAddress(addr);
+      })
+      .join(", ");
+
+    return (
+      <tr className="border-b border-terminal-border text-xs">
+        <td className="py-1 px-2 text-terminal-muted">#{order.orderId}</td>
+        <td className="py-1 px-2">
+          {formatTokenAmount(order.amount, dec, 2)} {borrowAsset?.symbol}
+        </td>
+        <td className="py-1 px-2 text-terminal-green">{formatRate(order.minRate)}</td>
+        <td className="py-1 px-2 text-terminal-muted">{formatLtv(order.maxLtv)}</td>
+        <td className="py-1 px-2 text-terminal-muted">{formatLtv(order.maxLltv)}</td>
+        <td className="py-1 px-2 text-terminal-muted">{formatDuration(order.maxDuration)}</td>
+        <td className="py-1 px-2 text-terminal-muted text-[10px]">{collateralSymbols || "—"}</td>
+      </tr>
+    );
+  }
+
+  // Trade variant
   const pct = fillPercent(order.filledAmount, order.amount);
   return (
     <tr className="border-b border-terminal-border text-xs">
       <td className="py-1 px-2 text-terminal-muted">#{order.orderId}</td>
       <td className="py-1 px-2">
-        {formatTokenAmount(order.amount, borrowAsset?.decimals ?? 6, 2)}{" "}
-        {borrowAsset?.symbol}
+        {formatTokenAmount(order.amount, dec, 2)} {borrowAsset?.symbol}
+      </td>
+      <td className="py-1 px-2">
+        {formatTokenAmount(order.filledAmount, dec, 2)} {borrowAsset?.symbol}
       </td>
       <td className="py-1 px-2">
         <div className="flex items-center gap-1">
@@ -329,7 +375,6 @@ function PrivateLendOrderRow({
         </div>
       </td>
       <td className="py-1 px-2 text-terminal-green">{formatRate(order.minRate)}</td>
-      <td className="py-1 px-2 text-terminal-muted text-[10px]">—</td>
     </tr>
   );
 }
@@ -337,20 +382,52 @@ function PrivateLendOrderRow({
 function PrivateBorrowOrderRow({
   order,
   assets,
+  variant,
 }: {
   order: BorrowOrder;
   assets: ReturnType<typeof useAssets>["data"];
+  variant: Variant;
 }) {
   const borrowAsset = assets?.borrowAssets.find(
     (a) => a.address.toLowerCase() === order.borrowAsset.toLowerCase()
   );
+  const dec = borrowAsset?.decimals ?? 6;
+
+  if (variant === "positions") {
+    const collateralSymbols = order.collateralAssets
+      .map((addr) => {
+        const ca = assets?.collateralAssets.find(
+          (a) => a.address.toLowerCase() === addr.toLowerCase()
+        );
+        return ca?.symbol ?? truncateAddress(addr);
+      })
+      .join(", ");
+
+    return (
+      <tr className="border-b border-terminal-border text-xs">
+        <td className="py-1 px-2 text-terminal-muted">#{order.orderId}</td>
+        <td className="py-1 px-2">
+          {formatTokenAmount(order.amount, dec, 2)} {borrowAsset?.symbol}
+        </td>
+        <td className="py-1 px-2 text-terminal-amber">{formatRate(order.maxRate)}</td>
+        <td className="py-1 px-2 text-terminal-muted">{formatLtv(order.minLtv)}</td>
+        <td className="py-1 px-2 text-terminal-muted">{formatLtv(order.minLltv)}</td>
+        <td className="py-1 px-2 text-terminal-muted">{formatDuration(order.minDuration)}</td>
+        <td className="py-1 px-2 text-terminal-muted text-[10px]">{collateralSymbols || "—"}</td>
+      </tr>
+    );
+  }
+
+  // Trade variant
   const pct = fillPercent(order.filledAmount, order.amount);
   return (
     <tr className="border-b border-terminal-border text-xs">
       <td className="py-1 px-2 text-terminal-muted">#{order.orderId}</td>
       <td className="py-1 px-2">
-        {formatTokenAmount(order.amount, borrowAsset?.decimals ?? 6, 2)}{" "}
-        {borrowAsset?.symbol}
+        {formatTokenAmount(order.amount, dec, 2)} {borrowAsset?.symbol}
+      </td>
+      <td className="py-1 px-2">
+        {formatTokenAmount(order.filledAmount, dec, 2)} {borrowAsset?.symbol}
       </td>
       <td className="py-1 px-2">
         <div className="flex items-center gap-1">
@@ -361,10 +438,11 @@ function PrivateBorrowOrderRow({
         </div>
       </td>
       <td className="py-1 px-2 text-terminal-amber">{formatRate(order.maxRate)}</td>
-      <td className="py-1 px-2 text-terminal-muted text-[10px]">—</td>
     </tr>
   );
 }
+
+// ── Loan row component ────────────────────────────────────────────────────────
 
 function PrivateLoanRow({
   loan,
@@ -373,6 +451,7 @@ function PrivateLoanRow({
   assets,
   side,
   borrowOrder,
+  variant,
 }: {
   loan: Loan;
   burnerIndex: number;
@@ -380,6 +459,7 @@ function PrivateLoanRow({
   assets: ReturnType<typeof useAssets>["data"];
   side: "lend" | "borrow";
   borrowOrder?: BorrowOrder;
+  variant: Variant;
 }) {
   const borrowAsset = assets?.borrowAssets.find(
     (a) => a.address.toLowerCase() === loan.borrowAsset.toLowerCase()
@@ -394,6 +474,220 @@ function PrivateLoanRow({
 
   const isSettled = loan.status === "repaid" || loan.status === "liquidated";
 
+  // Local override for immediate UI feedback after redeeming
+  const [localRedeemed, setLocalRedeemed] = useState(false);
+
+  // Stage 1: Get on-chain loan data + redeemable amount
+  const { data: loanData } = useReadContracts({
+    contracts: [
+      {
+        address: CONTRACT_ADDRESS,
+        abi: CONTRACT_ABI,
+        functionName: "getLoan",
+        args: [BigInt(loan.loanId)],
+      },
+      {
+        address: CONTRACT_ADDRESS,
+        abi: CONTRACT_ABI,
+        functionName: "redeemableByLoan",
+        args: [BigInt(loan.loanId)],
+      },
+    ],
+    query: { refetchInterval: 15_000 },
+  });
+
+  const onChainLoan = loanData?.[0]?.result;
+  const redeemableAmount = loanData?.[1]?.result as bigint | undefined;
+  const isRedeemed = (side === "lend" && isSettled && redeemableAmount === 0n) || localRedeemed;
+  const collateralAssets = onChainLoan?.collateralAssets ?? [];
+  const collateralAmounts = onChainLoan?.collateralAmounts ?? [];
+
+  // Stage 2 & 3: Oracle data — only for positions variant
+  const { data: oracleData } = useReadContracts({
+    contracts: collateralAssets.map((asset) => ({
+      address: CONTRACT_ADDRESS,
+      abi: CONTRACT_ABI,
+      functionName: "collateralOracle" as const,
+      args: [asset] as const,
+    })),
+    query: {
+      enabled: variant === "positions" && collateralAssets.length > 0,
+      refetchInterval: 15_000,
+    },
+  });
+
+  const oracleAddresses = (oracleData ?? [])
+    .map((o) => o?.result as `0x${string}` | undefined)
+    .filter((a): a is `0x${string}` => !!a);
+
+  const { data: priceData } = useReadContracts({
+    contracts: oracleAddresses.map((addr) => ({
+      address: addr,
+      abi: ORACLE_ABI,
+      functionName: "getPrice" as const,
+    })),
+    query: {
+      enabled: variant === "positions" && oracleAddresses.length > 0,
+      refetchInterval: 15_000,
+    },
+  });
+
+  // Build collateral display data
+  const collateralRows = collateralAssets.map((addr, i) => {
+    const colAsset = assets?.collateralAssets.find(
+      (a) => a.address.toLowerCase() === addr.toLowerCase()
+    );
+    const amount = collateralAmounts[i];
+    const colDec = colAsset?.decimals ?? 18;
+    const price = priceData?.[i]?.result as bigint | undefined;
+
+    let totalValue: bigint | undefined;
+    if (price !== undefined && amount !== undefined) {
+      totalValue = (price * amount) / (10n ** BigInt(colDec));
+    }
+
+    return {
+      address: addr,
+      symbol: colAsset?.symbol ?? truncateAddress(addr),
+      amount,
+      decimals: colDec,
+      price,
+      totalValue,
+    };
+  });
+
+  // Compute current LTV (positions variant)
+  const totalCollateralValue = collateralRows.reduce(
+    (sum, r) => sum + (r.totalValue ?? 0n),
+    0n
+  );
+  const currentLtv =
+    totalCollateralValue > 0n
+      ? Number((BigInt(loan.principal) * 10000n) / totalCollateralValue)
+      : undefined;
+
+  // Build sweep tokens list
+  const sweepTokens: { address: string; decimals: number; symbol: string }[] = [];
+  if (side === "lend" && borrowAsset) {
+    sweepTokens.push({ address: loan.borrowAsset, decimals: dec, symbol: borrowAsset.symbol });
+  } else if (side === "borrow" && borrowOrder) {
+    for (const colAddr of borrowOrder.collateralAssets) {
+      const colAsset = assets?.collateralAssets.find(
+        (a) => a.address.toLowerCase() === colAddr.toLowerCase()
+      );
+      if (colAsset) {
+        sweepTokens.push({ address: colAddr, decimals: colAsset.decimals, symbol: colAsset.symbol });
+      }
+    }
+  }
+
+  // Status display
+  const statusText = isRedeemed ? "REDEEMED" : loan.status.toUpperCase();
+  const statusClass = isRedeemed
+    ? "text-blue-400"
+    : (statusColor[loan.status] ?? "text-terminal-muted");
+
+  // ── Action cell (shared by both variants) ──
+  const actionCell = (
+    <td className="py-1 px-2">
+      <div className="flex flex-col gap-1">
+        {side === "borrow" && loan.status === "active" && (
+          <PrivateRepayButton
+            burnerIndex={burnerIndex}
+            burnerAddress={burnerAddress}
+            loan={loan}
+            decimals={dec}
+            borrowOrder={borrowOrder}
+            assets={assets}
+          />
+        )}
+        {side === "lend" && isSettled && !isRedeemed && (
+          <PrivateRedeemButton
+            burnerIndex={burnerIndex}
+            burnerAddress={burnerAddress}
+            loan={loan}
+            borrowAssetInfo={borrowAsset}
+            redeemable={redeemableAmount}
+            onRedeemed={() => setLocalRedeemed(true)}
+          />
+        )}
+        {isSettled && (isRedeemed || side === "borrow") && sweepTokens.length > 0 && (
+          <MultiSweepButton
+            burnerIndex={burnerIndex}
+            burnerAddress={burnerAddress}
+            tokens={sweepTokens}
+          />
+        )}
+      </div>
+    </td>
+  );
+
+  // ── Positions variant ──
+  if (variant === "positions") {
+    return (
+      <tr className="border-b border-terminal-border text-xs">
+        <td className="py-1 px-2 text-terminal-muted">#{loan.loanId}</td>
+        <td className="py-1 px-2">
+          {formatTokenAmount(loan.principal, dec, 2)} {borrowAsset?.symbol}
+        </td>
+        <td className="py-1 px-2">{formatRate(loan.rate)}</td>
+        {/* Collateral */}
+        <td className="py-1 px-2">
+          {collateralRows.length > 0 ? (
+            <div className="flex flex-col gap-0.5">
+              {collateralRows.map((row) => (
+                <div key={row.address} className="text-[10px]">
+                  {formatTokenAmount(row.amount?.toString() ?? "0", row.decimals, 4)} {row.symbol}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <span className="text-terminal-muted text-[10px]">...</span>
+          )}
+        </td>
+        {/* Price */}
+        <td className="py-1 px-2">
+          {collateralRows.length > 0 ? (
+            <div className="flex flex-col gap-0.5">
+              {collateralRows.map((row) => (
+                <div key={row.address} className="flex flex-col">
+                  {row.price !== undefined ? (
+                    <>
+                      <span className="text-[10px]">
+                        {formatTokenAmount(row.price.toString(), dec, 2)} {borrowAsset?.symbol}
+                      </span>
+                      {row.totalValue !== undefined && (
+                        <span className="text-terminal-muted text-[10px]">
+                          = {formatTokenAmount(row.totalValue.toString(), dec, 2)} {borrowAsset?.symbol}
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    <span className="text-terminal-muted text-[10px]">...</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <span className="text-terminal-muted text-[10px]">...</span>
+          )}
+        </td>
+        {/* Current LTV */}
+        <td className="py-1 px-2 text-[10px]">
+          {currentLtv !== undefined ? formatLtv(currentLtv) : "..."}
+        </td>
+        <td className="py-1 px-2 text-terminal-muted">
+          {loan.status === "active" ? timeRemaining(loan.maturityDate) : "—"}
+        </td>
+        <td className="py-1 px-2">
+          <span className={statusClass}>{statusText}</span>
+        </td>
+        {actionCell}
+      </tr>
+    );
+  }
+
+  // ── Trade variant ──
   return (
     <tr className="border-b border-terminal-border text-xs">
       <td className="py-1 px-2 text-terminal-muted">#{loan.loanId}</td>
@@ -402,69 +696,19 @@ function PrivateLoanRow({
       </td>
       <td className="py-1 px-2">{formatRate(loan.rate)}</td>
       <td className="py-1 px-2 text-terminal-muted">
-        {loan.status === "active" ? timeRemaining(loan.maturityDate) : loan.status.toUpperCase()}
+        {loan.status === "active" ? timeRemaining(loan.maturityDate) : "—"}
       </td>
       <td className="py-1 px-2">
-        <span className={statusColor[loan.status] ?? "text-terminal-muted"}>
-          {loan.status.toUpperCase()}
-        </span>
+        <span className={statusClass}>{statusText}</span>
       </td>
-      <td className="py-1 px-2">
-        <div className="flex flex-col gap-1">
-          {side === "borrow" && loan.status === "active" && (
-            <PrivateRepayButton
-              burnerIndex={burnerIndex}
-              burnerAddress={burnerAddress}
-              loan={loan}
-              decimals={dec}
-              borrowOrder={borrowOrder}
-              assets={assets}
-            />
-          )}
-          {side === "lend" && isSettled && (
-            <PrivateRedeemButton
-              burnerIndex={burnerIndex}
-              burnerAddress={burnerAddress}
-              loan={loan}
-              borrowAssetInfo={borrowAsset}
-            />
-          )}
-          {/* Lend side: fallback sweep for redeemed borrow asset */}
-          {side === "lend" && isSettled && borrowAsset && (
-            <SweepButton
-              burnerIndex={burnerIndex}
-              burnerAddress={burnerAddress}
-              token={loan.borrowAsset}
-              decimals={dec}
-              symbol={borrowAsset.symbol}
-            />
-          )}
-          {/* Borrow side: fallback sweep for each returned collateral asset */}
-          {side === "borrow" && isSettled && borrowOrder?.collateralAssets.map((colAddr) => {
-            const colAsset = assets?.collateralAssets.find(
-              (a) => a.address.toLowerCase() === colAddr.toLowerCase()
-            );
-            if (!colAsset) return null;
-            return (
-              <SweepButton
-                key={colAddr}
-                burnerIndex={burnerIndex}
-                burnerAddress={burnerAddress}
-                token={colAddr}
-                decimals={colAsset.decimals}
-                symbol={colAsset.symbol}
-              />
-            );
-          })}
-        </div>
-      </td>
+      {actionCell}
     </tr>
   );
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function PrivatePositions() {
+export function PrivatePositions({ variant = "trade" }: { variant?: Variant }) {
   const { address } = useAccount();
   const { walletExists } = useUnlink();
   const { data: assets } = useAssets();
@@ -480,9 +724,21 @@ export function PrivatePositions() {
   const hasAny =
     totalLendOrders + totalBorrowOrders + totalLenderLoans + totalBorrowerLoans > 0;
 
-  const LOAN_HEADERS = ["ID", "Principal", "Rate", "Matures", "Status", "Action"];
-  const LEND_ORDER_HEADERS = ["ID", "Amount", "Fill", "Min Rate", "Action"];
-  const BORROW_ORDER_HEADERS = ["ID", "Amount", "Fill", "Max Rate", "Action"];
+  // Column headers based on variant
+  const LEND_ORDER_HEADERS =
+    variant === "positions"
+      ? ["ID", "Amount", "Min Rate", "Max LTV", "Max LLTV", "Max Duration", "Collateral"]
+      : ["ID", "Amount", "Filled", "Fill %", "Min Rate"];
+
+  const BORROW_ORDER_HEADERS =
+    variant === "positions"
+      ? ["ID", "Amount", "Max Rate", "Min LTV", "Min LLTV", "Min Duration", "Collateral"]
+      : ["ID", "Amount", "Filled", "Fill %", "Max Rate"];
+
+  const LOAN_HEADERS =
+    variant === "positions"
+      ? ["ID", "Principal", "Rate", "Collateral", "Price", "Current LTV", "Matures", "Status", "Action"]
+      : ["ID", "Principal", "Rate", "Matures", "Status", "Action"];
 
   return (
     <div className="flex flex-col bg-terminal-panel border border-terminal-border overflow-auto">
@@ -528,7 +784,7 @@ export function PrivatePositions() {
                       </thead>
                       <tbody>
                         {p.lendOrders.map((o) => (
-                          <PrivateLendOrderRow key={o.orderId} order={o} assets={assets} />
+                          <PrivateLendOrderRow key={o.orderId} order={o} assets={assets} variant={variant} />
                         ))}
                       </tbody>
                     </table>
@@ -553,6 +809,7 @@ export function PrivatePositions() {
                             burnerAddress={p.burner.burnerAddress}
                             assets={assets}
                             side="lend"
+                            variant={variant}
                           />
                         ))}
                       </tbody>
@@ -587,7 +844,7 @@ export function PrivatePositions() {
                       </thead>
                       <tbody>
                         {p.borrowOrders.map((o) => (
-                          <PrivateBorrowOrderRow key={o.orderId} order={o} assets={assets} />
+                          <PrivateBorrowOrderRow key={o.orderId} order={o} assets={assets} variant={variant} />
                         ))}
                       </tbody>
                     </table>
@@ -613,6 +870,7 @@ export function PrivatePositions() {
                             assets={assets}
                             side="borrow"
                             borrowOrder={p.borrowOrders.find((o) => o.orderId === l.borrowOrderId)}
+                            variant={variant}
                           />
                         ))}
                       </tbody>

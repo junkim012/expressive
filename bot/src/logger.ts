@@ -1,16 +1,24 @@
 import fs from 'fs';
 
-const COLORS = {
-  'Solver-A': '\x1b[36m', // cyan
-  'Solver-B': '\x1b[35m', // magenta
-  'Solver-C': '\x1b[33m', // yellow
-} as Record<string, string>;
+const COLORS: Record<string, string> = {
+  'Solver-A':   '\x1b[36m', // cyan
+  'Solver-B':   '\x1b[35m', // magenta
+  'Solver-C':   '\x1b[33m', // yellow
+  'Lender-1':   '\x1b[34m', // blue
+  'Lender-2':   '\x1b[34m', // blue
+  'Borrower-1': '\x1b[33m', // yellow
+  'Borrower-2': '\x1b[33m', // yellow
+};
 
-const LOG_FILES = {
-  'Solver-A': '/tmp/el-solver-a.log',
-  'Solver-B': '/tmp/el-solver-b.log',
-  'Solver-C': '/tmp/el-solver-c.log',
-} as Record<string, string>;
+const LOG_FILES: Record<string, string> = {
+  'Solver-A':   '/tmp/el-solver-a.log',
+  'Solver-B':   '/tmp/el-solver-b.log',
+  'Solver-C':   '/tmp/el-solver-c.log',
+  'Lender-1':   '/tmp/el-lender-1.log',
+  'Lender-2':   '/tmp/el-lender-2.log',
+  'Borrower-1': '/tmp/el-borrower-1.log',
+  'Borrower-2': '/tmp/el-borrower-2.log',
+};
 
 const NC = '\x1b[0m';
 const RED = '\x1b[31m';
@@ -27,9 +35,12 @@ function appendToFile(label: string, msg: string): void {
   }
 }
 
-/** Truncate all solver log files on startup. */
-export function resetLogFiles(): void {
-  for (const file of Object.values(LOG_FILES)) {
+/** Truncate log files for the given labels. If no labels given, resets all. */
+export function resetLogFiles(labels?: string[]): void {
+  const files = labels
+    ? labels.map((l) => LOG_FILES[l]).filter(Boolean)
+    : Object.values(LOG_FILES);
+  for (const file of files) {
     fs.writeFileSync(file, '');
   }
 }

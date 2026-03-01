@@ -172,6 +172,13 @@ export const CONTRACT_ABI = [
     inputs: [{ name: "loanId", type: "uint256" }],
     outputs: [{ type: "bool" }],
   },
+  {
+    type: "function",
+    name: "collateralOracle",
+    stateMutability: "view",
+    inputs: [{ name: "asset", type: "address" }],
+    outputs: [{ type: "address" }],
+  },
   // ── Write functions ───────────────────────────────────────────────────────
   {
     type: "function",
@@ -222,6 +229,13 @@ export const CONTRACT_ABI = [
   {
     type: "function",
     name: "loanToNft",
+    stateMutability: "view",
+    inputs: [{ name: "loanId", type: "uint256" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "redeemableByLoan",
     stateMutability: "view",
     inputs: [{ name: "loanId", type: "uint256" }],
     outputs: [{ type: "uint256" }],
@@ -288,6 +302,17 @@ export const CONTRACT_ABI = [
       { name: "totalSurplus", type: "uint256" },
       { name: "pairCount", type: "uint256" },
     ],
+  },
+] as const satisfies Abi;
+
+// Oracle ABI (IOracle interface — getPrice)
+export const ORACLE_ABI = [
+  {
+    type: "function",
+    name: "getPrice",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "uint256" }],
   },
 ] as const satisfies Abi;
 

@@ -11,7 +11,7 @@ import {
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { foundry } from 'viem/chains';
-import type { Config } from './config';
+import type { BaseConfig, SolverConfig, LenderConfig, BorrowerConfig } from './config';
 
 const monadTestnet = defineChain({
   id: 10143,
@@ -22,23 +22,38 @@ const monadTestnet = defineChain({
   },
 });
 
-export type SolverWalletClient = WalletClient<Transport, Chain, Account>;
+export type BotWalletClient = WalletClient<Transport, Chain, Account>;
+
+// Keep backward compat
+export type SolverWalletClient = BotWalletClient;
 
 export interface Clients {
   publicClient: PublicClient<Transport, Chain>;
-  walletClients: SolverWalletClient[];
+  walletClients: BotWalletClient[];
 }
 
-export function createClients(config: Config): Clients {
+function buildClients(config: BaseConfig, keys: `0x${string}`[]): Clients {
   const chain = config.mode === 'local' ? foundry : monadTestnet;
   const transport = http(config.rpcUrl);
 
   const publicClient = createPublicClient({ chain, transport }) as PublicClient<Transport, Chain>;
 
-  const walletClients: SolverWalletClient[] = config.solverKeys.map((key) => {
+  const walletClients: BotWalletClient[] = keys.map((key) => {
     const account = privateKeyToAccount(key);
     return createWalletClient({ account, chain, transport });
   });
 
   return { publicClient, walletClients };
+}
+
+export function createClients(config: SolverConfig): Clients {
+  return buildClients(config, [...config.solverKeys]);
+}
+
+export function createLenderClients(config: LenderConfig): Clients {
+  return buildClients(config, [...config.lenderKeys]);
+}
+
+export function createBorrowerClients(config: BorrowerConfig): Clients {
+  return buildClients(config, [...config.borrowerKeys]);
 }

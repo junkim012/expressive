@@ -13,6 +13,7 @@ import { useUnlink } from "@unlink-xyz/react";
 import { useAssets } from "@/hooks/useAssets";
 import { ERC20_ABI, NATIVE_TOKEN } from "@/lib/contract";
 import { formatTokenAmount, parseTokenAmount } from "@/lib/format";
+import { useWalletMode } from "@/lib/walletMode";
 import { UnlinkWalletSetup } from "./UnlinkWalletSetup";
 
 type Step = "idle" | "preparing" | "approving" | "submitting" | "confirming" | "done";
@@ -35,6 +36,8 @@ export function DepositPanel() {
   const { address, isConnected } = useAccount();
   const { data: assets } = useAssets();
   const { walletExists, balances, deposit, refresh } = useUnlink();
+  const { mode } = useWalletMode();
+  const isPrivate = mode === "private";
 
   const erc20Assets = [
     ...(assets?.borrowAssets ?? []),
@@ -199,7 +202,7 @@ export function DepositPanel() {
         <span className="text-[10px] tracking-wider text-terminal-muted uppercase">
           Balances
         </span>
-        {!walletExists && (
+        {isPrivate && !walletExists && (
           <button
             onClick={() => setShowWalletSetup(!showWalletSetup)}
             className="text-[10px] text-terminal-amber hover:text-yellow-300 transition-colors"
@@ -213,24 +216,28 @@ export function DepositPanel() {
         <UnlinkWalletSetup onComplete={() => setShowWalletSetup(false)} />
       )}
 
-      {/* Balance table — wallet + shielded side by side */}
+      {/* Balance table */}
       <div className="flex flex-col gap-0.5">
-        <div className="grid grid-cols-3 gap-1">
+        <div className={`grid gap-1 ${isPrivate ? "grid-cols-3" : "grid-cols-2"}`}>
           <span className="text-[9px] text-terminal-muted uppercase tracking-wider">Asset</span>
           <span className="text-[9px] text-terminal-muted uppercase tracking-wider text-right">Wallet</span>
-          <span className="text-[9px] text-terminal-muted uppercase tracking-wider text-right">Shielded</span>
+          {isPrivate && (
+            <span className="text-[9px] text-terminal-muted uppercase tracking-wider text-right">Shielded</span>
+          )}
         </div>
 
-        {/* MON (native) row — always show if any balance */}
-        {(monWalletBal > 0n || monShieldedBal > 0n) && (
-          <div className="grid grid-cols-3 gap-1">
+        {/* MON (native) row */}
+        {(monWalletBal > 0n || (isPrivate && monShieldedBal > 0n)) && (
+          <div className={`grid gap-1 ${isPrivate ? "grid-cols-3" : "grid-cols-2"}`}>
             <span className="text-[10px] text-terminal-muted">MON</span>
             <span className="text-[10px] text-terminal-text font-mono text-right">
-              {formatTokenAmount(monWalletBal.toString(), 18)}
+              {formatTokenAmount(monWalletBal.toString(), 18, 4)}
             </span>
-            <span className={`text-[10px] font-mono text-right ${monShieldedBal > 0n ? "text-terminal-green" : "text-terminal-muted"}`}>
-              {formatTokenAmount(monShieldedBal.toString(), 18)}
-            </span>
+            {isPrivate && (
+              <span className={`text-[10px] font-mono text-right ${monShieldedBal > 0n ? "text-terminal-green" : "text-terminal-muted"}`}>
+                {formatTokenAmount(monShieldedBal.toString(), 18, 4)}
+              </span>
+            )}
           </div>
         )}
 
@@ -238,16 +245,19 @@ export function DepositPanel() {
         {erc20Assets.map((a, i) => {
           const wBal = walletBalance(i);
           const sBal = walletExists ? (balances[a.address.toLowerCase()] ?? 0n) : 0n;
-          if (wBal === 0n && sBal === 0n) return null;
+          const showRow = isPrivate ? (wBal > 0n || sBal > 0n) : wBal > 0n;
+          if (!showRow) return null;
           return (
-            <div key={a.address} className="grid grid-cols-3 gap-1">
+            <div key={a.address} className={`grid gap-1 ${isPrivate ? "grid-cols-3" : "grid-cols-2"}`}>
               <span className="text-[10px] text-terminal-muted">{a.symbol}</span>
               <span className="text-[10px] text-terminal-text font-mono text-right">
-                {formatTokenAmount(wBal.toString(), a.decimals)}
+                {formatTokenAmount(wBal.toString(), a.decimals, 4)}
               </span>
-              <span className={`text-[10px] font-mono text-right ${sBal > 0n ? "text-terminal-green" : "text-terminal-muted"}`}>
-                {formatTokenAmount(sBal.toString(), a.decimals)}
-              </span>
+              {isPrivate && (
+                <span className={`text-[10px] font-mono text-right ${sBal > 0n ? "text-terminal-green" : "text-terminal-muted"}`}>
+                  {formatTokenAmount(sBal.toString(), a.decimals, 4)}
+                </span>
+              )}
             </div>
           );
         })}
@@ -257,8 +267,8 @@ export function DepositPanel() {
         )}
       </div>
 
-      {/* Deposit form — only when wallet exists */}
-      {walletExists && (
+      {/* Deposit form — only in private mode when wallet exists */}
+      {isPrivate && walletExists && (
         <>
           <div className="flex gap-1">
             <select
@@ -294,20 +304,20 @@ export function DepositPanel() {
           {isNativeSelected && (
             <div className="flex gap-3">
               <span className="text-[10px] text-terminal-muted">
-                Wallet: {formatTokenAmount(monWalletBal.toString(), 18)} MON
+                Wallet: {formatTokenAmount(monWalletBal.toString(), 18, 4)} MON
               </span>
               <span className="text-[10px] text-terminal-muted">
-                Shielded: {formatTokenAmount(monShieldedBal.toString(), 18)} MON
+                Shielded: {formatTokenAmount(monShieldedBal.toString(), 18, 4)} MON
               </span>
             </div>
           )}
           {!isNativeSelected && selectedErc20 && selectedErc20Index >= 0 && (
             <div className="flex gap-3">
               <span className="text-[10px] text-terminal-muted">
-                Wallet: {formatTokenAmount(walletBalance(selectedErc20Index).toString(), selectedErc20.decimals)} {selectedErc20.symbol}
+                Wallet: {formatTokenAmount(walletBalance(selectedErc20Index).toString(), selectedErc20.decimals, 4)} {selectedErc20.symbol}
               </span>
               <span className="text-[10px] text-terminal-muted">
-                Shielded: {formatTokenAmount((balances[token.toLowerCase()] ?? 0n).toString(), selectedErc20.decimals)} {selectedErc20.symbol}
+                Shielded: {formatTokenAmount((balances[token.toLowerCase()] ?? 0n).toString(), selectedErc20.decimals, 4)} {selectedErc20.symbol}
               </span>
             </div>
           )}

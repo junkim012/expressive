@@ -1,15 +1,16 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   useAccount,
   useWriteContract,
   useWaitForTransactionReceipt,
+  useReadContracts,
 } from "wagmi";
 import { useUnlink } from "@unlink-xyz/react";
 import { useAssets } from "@/hooks/useAssets";
-import { CONTRACT_ADDRESS, CONTRACT_ABI, ERC20_ABI, MAX_UINT256, NATIVE_TOKEN, GAS_RESERVE } from "@/lib/contract";
-import { parsePctToBps, parseLtvToBps, parseDurationToSeconds, parseTokenAmount } from "@/lib/format";
+import { CONTRACT_ADDRESS, CONTRACT_ABI, ERC20_ABI, ORACLE_ABI, MAX_UINT256, NATIVE_TOKEN, GAS_RESERVE } from "@/lib/contract";
+import { parsePctToBps, parseLtvToBps, parseDurationToSeconds, parseTokenAmount, formatTokenAmount } from "@/lib/format";
 import { encodeBurnerCall, waitForBurnerTx } from "@/lib/burnerClient";
 import { addBurnerForWallet } from "@/lib/burnerStorage";
 import { useWalletMode } from "@/lib/walletMode";
@@ -17,7 +18,14 @@ import { ensureAsset } from "@/lib/ensureAsset";
 
 interface CollateralRow {
   asset: string;
-  amount: string;
+  weight: string;
+}
+
+interface ComputedAmount {
+  asset: string;
+  amount: bigint;
+  symbol: string;
+  decimals: number;
 }
 
 interface FormState {
@@ -35,7 +43,7 @@ interface FormState {
 const EMPTY: FormState = {
   borrowAsset: "",
   amount: "",
-  collateralRows: [{ asset: "", amount: "" }],
+  collateralRows: [{ asset: "", weight: "100" }],
   maxRate: "",
   minLtv: "",
   minLltv: "",
@@ -43,6 +51,16 @@ const EMPTY: FormState = {
   durationUnit: "days",
   fillOrKill: false,
 };
+
+function redistributeWeights(rows: CollateralRow[]): CollateralRow[] {
+  if (rows.length === 0) return rows;
+  const base = Math.floor(100 / rows.length);
+  const remainder = 100 - base * rows.length;
+  return rows.map((r, i) => ({
+    ...r,
+    weight: String(base + (i === 0 ? remainder : 0)),
+  }));
+}
 
 function FieldRow({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
@@ -126,16 +144,16 @@ export function BorrowOrderForm() {
   };
 
   const addCollateralRow = () =>
-    setForm((prev) => ({
-      ...prev,
-      collateralRows: [...prev.collateralRows, { asset: "", amount: "" }],
-    }));
+    setForm((prev) => {
+      const newRows = redistributeWeights([...prev.collateralRows, { asset: "", weight: "" }]);
+      return { ...prev, collateralRows: newRows };
+    });
 
   const removeCollateralRow = (i: number) =>
-    setForm((prev) => ({
-      ...prev,
-      collateralRows: prev.collateralRows.filter((_, idx) => idx !== i),
-    }));
+    setForm((prev) => {
+      const newRows = redistributeWeights(prev.collateralRows.filter((_, idx) => idx !== i));
+      return { ...prev, collateralRows: newRows };
+    });
 
   const { writeContract, data: txHash, isPending: isWritePending, reset } = useWriteContract();
   const { isLoading: isTxLoading, isSuccess: isTxSuccess } = useWaitForTransactionReceipt({
@@ -147,6 +165,76 @@ export function BorrowOrderForm() {
   // closure always sees the rows that were validated at submit time.
   const validRowsRef = useRef<CollateralRow[]>([]);
 
+  // ── Oracle price fetching (2-stage) ───────────────────────────────────────
+  const selectedAssets = form.collateralRows.filter((r) => r.asset);
+
+  // Stage 1: Get oracle address for each selected collateral asset
+  const { data: oracleData } = useReadContracts({
+    contracts: selectedAssets.map((r) => ({
+      address: CONTRACT_ADDRESS,
+      abi: CONTRACT_ABI,
+      functionName: "collateralOracle" as const,
+      args: [r.asset as `0x${string}`] as const,
+    })),
+    query: {
+      enabled: selectedAssets.length > 0,
+      refetchInterval: 15_000,
+    },
+  });
+
+  const oracleAddresses = (oracleData ?? [])
+    .map((o) => o?.result as `0x${string}` | undefined)
+    .filter((a): a is `0x${string}` => !!a);
+
+  // Stage 2: Get price from each oracle
+  const { data: priceData } = useReadContracts({
+    contracts: oracleAddresses.map((addr) => ({
+      address: addr,
+      abi: ORACLE_ABI,
+      functionName: "getPrice" as const,
+    })),
+    query: {
+      enabled: oracleAddresses.length > 0,
+      refetchInterval: 15_000,
+    },
+  });
+
+  const prices = (priceData ?? []).map((p) => p?.result as bigint | undefined);
+
+  // ── Compute collateral amounts from LTV + oracle prices ───────────────────
+  const computedAmounts = useMemo((): (ComputedAmount | null)[] => {
+    if (!form.amount || !form.minLtv || !form.borrowAsset) return [];
+
+    const borrowAssetInfo = assets?.borrowAssets.find((a) => a.address === form.borrowAsset);
+    const borrowDec = borrowAssetInfo?.decimals ?? 6;
+    const borrowAmountRaw = parseTokenAmount(form.amount, borrowDec);
+    const minLtvBps = BigInt(parseLtvToBps(form.minLtv));
+
+    if (minLtvBps === 0n) return [];
+
+    // Total required collateral value in borrow asset terms (wei)
+    const totalRequired = borrowAmountRaw * minLtvBps / 10000n;
+
+    return selectedAssets.map((row, i) => {
+      const colAsset = assets?.collateralAssets.find((a) => a.address === row.asset);
+      const colDec = BigInt(colAsset?.decimals ?? 18);
+      const price = prices[i];
+      const weight = BigInt(Math.round(parseFloat(row.weight || "0")));
+
+      if (!price || price === 0n || weight === 0n) return null;
+
+      // This asset's share of the required value
+      const assetValue = totalRequired * weight / 100n;
+      // Convert value to collateral amount: amount = value * 10^colDec / price
+      const amount = assetValue * (10n ** colDec) / price;
+
+      return { asset: row.asset, amount, symbol: colAsset?.symbol ?? "???", decimals: Number(colDec) };
+    });
+  }, [form.amount, form.minLtv, form.borrowAsset, selectedAssets, prices, assets]);
+
+  const computedAmountsRef = useRef<(ComputedAmount | null)[]>([]);
+  computedAmountsRef.current = computedAmounts;
+
   const placeOrder = useCallback(
     (rows: CollateralRow[]) => {
       const borrowAssetInfo = assets?.borrowAssets.find((a) => a.address === form.borrowAsset);
@@ -157,11 +245,9 @@ export function BorrowOrderForm() {
       const minLltv = BigInt(parseLtvToBps(form.minLltv));
       const minDuration = BigInt(parseDurationToSeconds(form.durationValue, form.durationUnit));
 
-      const collateralAssets = rows.map((r) => r.asset as `0x${string}`);
-      const collateralAmounts = rows.map((r) => {
-        const colAsset = assets?.collateralAssets.find((a) => a.address === r.asset);
-        return parseTokenAmount(r.amount, colAsset?.decimals ?? 18);
-      });
+      const validComputed = computedAmountsRef.current.filter((c): c is ComputedAmount => c !== null);
+      const collateralAssets = validComputed.map((c) => c.asset as `0x${string}`);
+      const collateralAmounts = validComputed.map((c) => c.amount);
 
       setStep("placing");
       writeContract({
@@ -191,8 +277,6 @@ export function BorrowOrderForm() {
         return;
       }
       const row = rows[idx];
-      const colAsset = assets?.collateralAssets.find((a) => a.address === row.asset);
-      const amount = parseTokenAmount(row.amount, colAsset?.decimals ?? 18);
       setStep(`approving-${idx}`);
       writeContract({
         address: row.asset as `0x${string}`,
@@ -200,9 +284,8 @@ export function BorrowOrderForm() {
         functionName: "approve",
         args: [CONTRACT_ADDRESS, MAX_UINT256],
       });
-      void amount; // amount only needed for display; wagmi encodes MAX_UINT256
     },
-    [assets, writeContract, placeOrder]
+    [writeContract, placeOrder]
   );
 
   // Advance the approval chain (or move to place) after each tx confirms.
@@ -239,8 +322,13 @@ export function BorrowOrderForm() {
     if (!form.minLltv || parseFloat(form.minLltv) <= 0) return setError("Enter min LLTV");
     if (!form.durationValue || parseFloat(form.durationValue) <= 0) return setError("Enter duration");
 
-    const validRows = form.collateralRows.filter((r) => r.asset && r.amount);
-    if (validRows.length === 0) return setError("Add at least one collateral row");
+    const validComputed = computedAmounts.filter((c): c is ComputedAmount => c !== null);
+    if (validComputed.length === 0) return setError("Add collateral and ensure oracle prices are loaded");
+
+    const weightSum = form.collateralRows
+      .filter((r) => r.asset)
+      .reduce((s, r) => s + Math.round(parseFloat(r.weight || "0")), 0);
+    if (Math.abs(weightSum - 100) > 1) return setError("Collateral weights must sum to 100%");
 
     const borrowAssetInfo = assets?.borrowAssets.find((a) => a.address === form.borrowAsset);
     const dec = borrowAssetInfo?.decimals ?? 6;
@@ -250,11 +338,8 @@ export function BorrowOrderForm() {
     const minLltv = BigInt(parseLtvToBps(form.minLltv));
     const minDuration = BigInt(parseDurationToSeconds(form.durationValue, form.durationUnit));
 
-    const collateralAssets = validRows.map((r) => r.asset as `0x${string}`);
-    const collateralAmounts = validRows.map((r) => {
-      const colAsset = assets?.collateralAssets.find((a) => a.address === r.asset);
-      return parseTokenAmount(r.amount, colAsset?.decimals ?? 18);
-    });
+    const collateralAssets = validComputed.map((c) => c.asset as `0x${string}`);
+    const collateralAmounts = validComputed.map((c) => c.amount);
 
     const deps = { balances, burnerGetBalance, burnerGetTokenBalance, burnerFund, waitForConfirmation };
 
@@ -268,19 +353,19 @@ export function BorrowOrderForm() {
       await ensureAsset(deps, burnerIndex, burner.address, NATIVE_TOKEN, GAS_RESERVE, "MON");
 
       // Ensure burner has each collateral asset (tops up shortfall only)
-      for (let i = 0; i < validRows.length; i++) {
+      for (let i = 0; i < validComputed.length; i++) {
         setStep(`private:funding-${i}`);
-        const colAsset = assets?.collateralAssets.find((a) => a.address === validRows[i].asset);
-        await ensureAsset(deps, burnerIndex, burner.address, validRows[i].asset, collateralAmounts[i], colAsset?.symbol ?? "");
+        const c = validComputed[i];
+        await ensureAsset(deps, burnerIndex, burner.address, c.asset, c.amount, c.symbol);
       }
 
       // Approve each collateral asset
-      for (let i = 0; i < validRows.length; i++) {
+      for (let i = 0; i < validComputed.length; i++) {
         setStep(`private:approving-${i}`);
         const { txHash } = await burnerSend(
           burnerIndex,
           encodeBurnerCall({
-            address: validRows[i].asset as `0x${string}`,
+            address: validComputed[i].asset as `0x${string}`,
             abi: ERC20_ABI,
             functionName: "approve",
             args: [CONTRACT_ADDRESS, collateralAmounts[i]],
@@ -337,10 +422,16 @@ export function BorrowOrderForm() {
     if (!form.minLltv || parseFloat(form.minLltv) <= 0) return setError("Enter min LLTV");
     if (!form.durationValue || parseFloat(form.durationValue) <= 0) return setError("Enter duration");
 
-    const validRows = form.collateralRows.filter((r) => r.asset && r.amount);
-    if (validRows.length === 0) return setError("Add at least one collateral row");
+    const validComputed = computedAmounts.filter((c): c is ComputedAmount => c !== null);
+    if (validComputed.length === 0) return setError("Add collateral and ensure oracle prices are loaded");
 
-    // Snapshot the validated rows for use in the useEffect closure.
+    const weightSum = form.collateralRows
+      .filter((r) => r.asset)
+      .reduce((s, r) => s + Math.round(parseFloat(r.weight || "0")), 0);
+    if (Math.abs(weightSum - 100) > 1) return setError("Collateral weights must sum to 100%");
+
+    // Build valid rows for the approval chain (needs asset addresses)
+    const validRows = form.collateralRows.filter((r) => r.asset);
     validRowsRef.current = validRows;
 
     // Start the approval chain. Each approve confirms → useEffect advances to next.
@@ -409,35 +500,50 @@ export function BorrowOrderForm() {
 
       <FieldRow label="Collateral">
         <div className="flex flex-col gap-1.5">
-          {form.collateralRows.map((row, i) => (
-            <div key={i} className="flex gap-1">
-              <select
-                value={row.asset}
-                onChange={(e) => updateCollateralRow(i, "asset", e.target.value)}
-                className="flex-1 bg-terminal-panel border border-terminal-border px-2 py-1.5 text-terminal-text focus:border-terminal-amber focus:outline-none text-xs"
-              >
-                <option value="">Asset...</option>
-                {assets?.collateralAssets.map((a) => (
-                  <option key={a.address} value={a.address}>{a.symbol}</option>
-                ))}
-              </select>
-              <input
-                type="number"
-                value={row.amount}
-                onChange={(e) => updateCollateralRow(i, "amount", e.target.value)}
-                placeholder="0.00"
-                className="flex-1 bg-transparent border border-terminal-border px-2 py-1.5 text-terminal-text placeholder-terminal-muted focus:border-terminal-amber focus:outline-none text-xs"
-              />
-              {form.collateralRows.length > 1 && (
-                <button
-                  onClick={() => removeCollateralRow(i)}
-                  className="px-2 text-terminal-muted hover:text-terminal-red transition-colors text-xs"
-                >
-                  ×
-                </button>
-              )}
-            </div>
-          ))}
+          {form.collateralRows.map((row, i) => {
+            const computed = computedAmounts[i];
+            return (
+              <div key={i} className="flex flex-col gap-0.5">
+                <div className="flex gap-1">
+                  <select
+                    value={row.asset}
+                    onChange={(e) => updateCollateralRow(i, "asset", e.target.value)}
+                    className="flex-1 bg-terminal-panel border border-terminal-border px-2 py-1.5 text-terminal-text focus:border-terminal-amber focus:outline-none text-xs"
+                  >
+                    <option value="">Asset...</option>
+                    {assets?.collateralAssets.map((a) => (
+                      <option key={a.address} value={a.address}>{a.symbol}</option>
+                    ))}
+                  </select>
+                  <div className="relative w-20">
+                    <input
+                      type="number"
+                      value={row.weight}
+                      onChange={(e) => updateCollateralRow(i, "weight", e.target.value)}
+                      placeholder="100"
+                      className="w-full bg-transparent border border-terminal-border px-2 py-1.5 pr-5 text-terminal-text placeholder-terminal-muted focus:border-terminal-amber focus:outline-none text-xs"
+                    />
+                    <span className="absolute right-1.5 top-1/2 -translate-y-1/2 text-terminal-muted text-[10px]">%</span>
+                  </div>
+                  {form.collateralRows.length > 1 && (
+                    <button
+                      onClick={() => removeCollateralRow(i)}
+                      className="px-2 text-terminal-muted hover:text-terminal-red transition-colors text-xs"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+                {row.asset && (
+                  <div className="text-[10px] text-terminal-muted pl-1">
+                    {computed
+                      ? `→ ${formatTokenAmount(computed.amount.toString(), computed.decimals, 6)} ${computed.symbol}`
+                      : form.amount && form.minLtv ? "..." : "Enter amount & LTV"}
+                  </div>
+                )}
+              </div>
+            );
+          })}
           <button
             onClick={addCollateralRow}
             className="text-[10px] text-terminal-muted hover:text-terminal-text transition-colors text-left"
