@@ -26,7 +26,7 @@ function HealthIndicator({ loanId }: { loanId: string }) {
     abi: CONTRACT_ABI,
     functionName: "getHealthFactor",
     args: [BigInt(loanId)],
-    query: { refetchInterval: 10_000 },
+    query: { refetchInterval: 1_000 },
   });
 
   if (hf === undefined) return <span className="text-terminal-muted">—</span>;

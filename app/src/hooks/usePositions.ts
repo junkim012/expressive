@@ -11,28 +11,28 @@ export function useMyPositions() {
     queryKey: ["orders", "lend", address],
     queryFn: () => fetchLendOrders({ owner: address }),
     enabled: !!address,
-    refetchInterval: 10_000,
+    refetchInterval: 1_000,
   });
 
   const borrowOrders = useQuery({
     queryKey: ["orders", "borrow", address],
     queryFn: () => fetchBorrowOrders({ owner: address }),
     enabled: !!address,
-    refetchInterval: 10_000,
+    refetchInterval: 1_000,
   });
 
   const lenderLoans = useQuery({
     queryKey: ["loans", "lender", address],
     queryFn: () => fetchLoans({ lender: address }),
     enabled: !!address,
-    refetchInterval: 10_000,
+    refetchInterval: 1_000,
   });
 
   const borrowerLoans = useQuery({
     queryKey: ["loans", "borrower", address],
     queryFn: () => fetchLoans({ borrower: address }),
     enabled: !!address,
-    refetchInterval: 10_000,
+    refetchInterval: 1_000,
   });
 
   return { lendOrders, borrowOrders, lenderLoans, borrowerLoans, address };

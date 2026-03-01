@@ -28,7 +28,8 @@ export const monadTestnet: Chain = {
 };
 
 function getChain(): Chain {
-  if (chainId === 10143) return monadTestnet;
+  if (chainId === 10143)
+    return { ...monadTestnet, rpcUrls: { default: { http: [rpcUrl] } } };
   // Default to local for dev
   return { ...localChain, id: chainId, rpcUrls: { default: { http: [rpcUrl] } } };
 }

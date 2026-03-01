@@ -33,7 +33,9 @@ export interface Clients {
 }
 
 function buildClients(config: BaseConfig, keys: `0x${string}`[]): Clients {
-  const chain = config.mode === 'local' ? foundry : monadTestnet;
+  const chain = config.mode === 'local'
+    ? foundry
+    : { ...monadTestnet, rpcUrls: { default: { http: [config.rpcUrl] } } };
   const transport = http(config.rpcUrl);
 
   const publicClient = createPublicClient({ chain, transport }) as PublicClient<Transport, Chain>;

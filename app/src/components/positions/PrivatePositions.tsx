@@ -514,7 +514,7 @@ function PrivateLoanRow({
     })),
     query: {
       enabled: variant === "positions" && collateralAssets.length > 0,
-      refetchInterval: 15_000,
+      refetchInterval: 1_000,
     },
   });
 
@@ -530,7 +530,7 @@ function PrivateLoanRow({
     })),
     query: {
       enabled: variant === "positions" && oracleAddresses.length > 0,
-      refetchInterval: 15_000,
+      refetchInterval: 1_000,
     },
   });
 

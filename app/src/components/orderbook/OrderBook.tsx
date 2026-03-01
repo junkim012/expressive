@@ -12,6 +12,7 @@ import {
   fillPercent,
   truncateAddress,
 } from "@/lib/format";
+import { ExpressiveLogo } from "./ExpressiveLogo";
 
 // ── Filter state ─────────────────────────────────────────────────────────────
 
@@ -369,6 +370,11 @@ export function OrderBook() {
             connected={connected}
           />
         </div>
+      </div>
+
+      {/* Branded logo */}
+      <div className="border-t border-terminal-border shrink-0">
+        <ExpressiveLogo />
       </div>
     </div>
   );
