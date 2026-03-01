@@ -20,7 +20,7 @@ set -a; source "$ENV_FILE"; set +a
 
 # Override DB path to keep local data separate from any testnet data
 export DB_PATH="$BACKEND_DIR/data/local.db"
-export PORT=3001
+export PORT=3002
 export POLL_INTERVAL_MS=1000  # 1s — matches anvil block time
 
 echo "Starting backend..."

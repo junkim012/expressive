@@ -52,7 +52,7 @@ function LendOrderRow({ order, assets }: { order: LendOrder; assets: ReturnType<
     <tr className={`border-b border-terminal-border hover:bg-white/[0.02] transition-colors ${filled ? "opacity-40" : ""}`}>
       <td className="py-1 px-2 text-terminal-green tabular-nums">{formatRate(order.minRate)}</td>
       <td className="py-1 px-2 tabular-nums">
-        <div>{formatTokenAmount(order.amount, borrowAsset?.decimals ?? 6, 0)} {borrowAsset?.symbol ?? "?"}</div>
+        <div>{formatTokenAmount(order.amount, borrowAsset?.decimals ?? 6, 2)} {borrowAsset?.symbol ?? "?"}</div>
         <div className="text-terminal-muted text-[10px]">{pct.toFixed(1)}% filled</div>
       </td>
       <td className="py-1 px-2 text-terminal-muted">{formatLtv(order.maxLtv)}</td>
@@ -79,7 +79,7 @@ function BorrowOrderRow({ order, assets }: { order: BorrowOrder; assets: ReturnT
     <tr className={`border-b border-terminal-border hover:bg-white/[0.02] transition-colors ${filled ? "opacity-40" : ""}`}>
       <td className="py-1 px-2 text-terminal-amber tabular-nums">{formatRate(order.maxRate)}</td>
       <td className="py-1 px-2 tabular-nums">
-        <div>{formatTokenAmount(order.amount, borrowAsset?.decimals ?? 6, 0)} {borrowAsset?.symbol ?? "?"}</div>
+        <div>{formatTokenAmount(order.amount, borrowAsset?.decimals ?? 6, 2)} {borrowAsset?.symbol ?? "?"}</div>
         <div className="text-terminal-muted text-[10px]">{pct.toFixed(1)}% filled</div>
       </td>
       <td className="py-1 px-2 text-terminal-muted">{formatLtv(order.minLtv)}</td>
@@ -96,25 +96,28 @@ function BorrowOrderRow({ order, assets }: { order: BorrowOrder; assets: ReturnT
   );
 }
 
-const COL_HEADERS = ["Rate", "Amount", "LTV", "LLTV", "Duration", "Collateral"];
+const LEND_COL_HEADERS = ["Min Rate", "Amount", "Max LTV", "Max LLTV", "Max Dur", "Collateral"];
+const BORROW_COL_HEADERS = ["Max Rate", "Amount", "Min LTV", "Min LLTV", "Min Dur", "Collateral"];
 
 function OrderTable<T extends LendOrder | BorrowOrder>({
   orders,
+  headers,
   renderRow,
   emptyMessage,
   connected,
 }: {
   orders: T[];
+  headers: string[];
   renderRow: (order: T) => React.ReactNode;
   emptyMessage: string;
   connected: boolean;
 }) {
   return (
     <div className="overflow-auto h-full">
-      <table className="w-full text-xs">
+      <table className="w-full min-w-max text-xs">
         <thead className="sticky top-0 bg-terminal-panel z-10">
           <tr className="border-b border-terminal-border-bright">
-            {COL_HEADERS.map((h) => (
+            {headers.map((h) => (
               <th
                 key={h}
                 className="py-1 px-2 text-left text-terminal-muted font-normal tracking-wider text-[10px] uppercase"
@@ -193,6 +196,24 @@ function FilterBar({
           className="w-14 bg-transparent border border-terminal-border px-1 py-0.5 text-terminal-text placeholder-terminal-muted focus:border-terminal-green"
         />
       </div>
+      <div className="flex items-center gap-1">
+        <span className="text-terminal-muted">LLTV:</span>
+        <input
+          type="text"
+          placeholder="min%"
+          value={filters.minLltv}
+          onChange={(e) => setFilters({ ...filters, minLltv: e.target.value })}
+          className="w-14 bg-transparent border border-terminal-border px-1 py-0.5 text-terminal-text placeholder-terminal-muted focus:border-terminal-green"
+        />
+        <span className="text-terminal-muted">–</span>
+        <input
+          type="text"
+          placeholder="max%"
+          value={filters.maxLltv}
+          onChange={(e) => setFilters({ ...filters, maxLltv: e.target.value })}
+          className="w-14 bg-transparent border border-terminal-border px-1 py-0.5 text-terminal-text placeholder-terminal-muted focus:border-terminal-green"
+        />
+      </div>
       {collateralAssets.length > 0 && (
         <div className="flex items-center gap-1 flex-wrap">
           <span className="text-terminal-muted">Collateral:</span>
@@ -245,6 +266,8 @@ export function OrderBook() {
     if (filters.maxRate) orders = orders.filter((o) => o.minRate <= parseFloat(filters.maxRate) * 100);
     if (filters.minLtv) orders = orders.filter((o) => o.maxLtv >= parseFloat(filters.minLtv) * 100);
     if (filters.maxLtv) orders = orders.filter((o) => o.maxLtv <= parseFloat(filters.maxLtv) * 100);
+    if (filters.minLltv) orders = orders.filter((o) => o.maxLltv >= parseFloat(filters.minLltv) * 100);
+    if (filters.maxLltv) orders = orders.filter((o) => o.maxLltv <= parseFloat(filters.maxLltv) * 100);
     if (filters.collateralAssets.length > 0) {
       orders = orders.filter((o) =>
         filters.collateralAssets.every((addr) =>
@@ -264,6 +287,8 @@ export function OrderBook() {
     if (filters.maxRate) orders = orders.filter((o) => o.maxRate <= parseFloat(filters.maxRate) * 100);
     if (filters.minLtv) orders = orders.filter((o) => o.minLtv >= parseFloat(filters.minLtv) * 100);
     if (filters.maxLtv) orders = orders.filter((o) => o.minLtv <= parseFloat(filters.maxLtv) * 100);
+    if (filters.minLltv) orders = orders.filter((o) => o.minLltv >= parseFloat(filters.minLltv) * 100);
+    if (filters.maxLltv) orders = orders.filter((o) => o.minLltv <= parseFloat(filters.maxLltv) * 100);
     if (filters.collateralAssets.length > 0) {
       orders = orders.filter((o) =>
         filters.collateralAssets.some((addr) =>
@@ -318,6 +343,7 @@ export function OrderBook() {
           </div>
           <OrderTable
             orders={filteredLend}
+            headers={LEND_COL_HEADERS}
             renderRow={(order) => (
               <LendOrderRow key={order.orderId} order={order} assets={assets} />
             )}
@@ -335,6 +361,7 @@ export function OrderBook() {
           </div>
           <OrderTable
             orders={filteredBorrow}
+            headers={BORROW_COL_HEADERS}
             renderRow={(order) => (
               <BorrowOrderRow key={order.orderId} order={order} assets={assets} />
             )}

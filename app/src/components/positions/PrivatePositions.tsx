@@ -5,8 +5,9 @@ import { useAccount } from "wagmi";
 import { useUnlink } from "@unlink-xyz/react";
 import { usePrivatePositions } from "@/hooks/usePrivatePositions";
 import { useAssets } from "@/hooks/useAssets";
-import { CONTRACT_ADDRESS, CONTRACT_ABI, ERC20_ABI } from "@/lib/contract";
+import { CONTRACT_ADDRESS, CONTRACT_ABI, ERC20_ABI, NATIVE_TOKEN, GAS_RESERVE } from "@/lib/contract";
 import { encodeBurnerCall, waitForBurnerTx, publicClient } from "@/lib/burnerClient";
+import { ensureAsset } from "@/lib/ensureAsset";
 import {
   formatRate,
   formatTokenAmount,
@@ -14,7 +15,7 @@ import {
   timeRemaining,
   truncateAddress,
 } from "@/lib/format";
-import type { LendOrder, BorrowOrder, Loan } from "@/types";
+import type { LendOrder, BorrowOrder, Loan, AssetInfo } from "@/types";
 
 // ── Sweep button ──────────────────────────────────────────────────────────────
 
@@ -86,19 +87,36 @@ function SweepButton({
 
 function PrivateRepayButton({
   burnerIndex,
+  burnerAddress,
   loan,
   decimals,
+  borrowOrder,
+  assets,
 }: {
   burnerIndex: number;
+  burnerAddress: string;
   loan: Loan;
   decimals: number;
+  borrowOrder: BorrowOrder | undefined;
+  assets: ReturnType<typeof useAssets>["data"];
 }) {
-  const { burnerSend } = useUnlink();
-  const [step, setStep] = useState<"idle" | "approving" | "repaying" | "done">("idle");
+  const {
+    balances,
+    burnerFund,
+    burnerSend,
+    burnerGetBalance,
+    burnerGetTokenBalance,
+    burnerSweepToPool,
+    waitForConfirmation,
+  } = useUnlink();
+  const [step, setStep] = useState<
+    "idle" | "gas" | "funding" | "approving" | "repaying" | "sweeping" | "done"
+  >("idle");
   const [error, setError] = useState<string | null>(null);
 
   async function handleRepay() {
     setError(null);
+    const deps = { balances, burnerGetBalance, burnerGetTokenBalance, burnerFund, waitForConfirmation };
     try {
       // Compute total due from on-chain
       const interest = await publicClient.readContract({
@@ -109,7 +127,19 @@ function PrivateRepayButton({
       }) as bigint;
       const repayAmount = BigInt(loan.principal) + interest;
 
-      // Step 1: approve
+      const borrowAssetInfo = assets?.borrowAssets.find(
+        (a) => a.address.toLowerCase() === loan.borrowAsset.toLowerCase()
+      );
+
+      // Ensure burner has gas
+      setStep("gas");
+      await ensureAsset(deps, burnerIndex, burnerAddress, NATIVE_TOKEN, GAS_RESERVE, "MON");
+
+      // Ensure burner has enough borrow asset to repay
+      setStep("funding");
+      await ensureAsset(deps, burnerIndex, burnerAddress, loan.borrowAsset, repayAmount, borrowAssetInfo?.symbol ?? "");
+
+      // Approve
       setStep("approving");
       const { txHash: approveTx } = await burnerSend(
         burnerIndex,
@@ -122,7 +152,7 @@ function PrivateRepayButton({
       );
       await waitForBurnerTx(approveTx);
 
-      // Step 2: repay
+      // Repay
       setStep("repaying");
       const { txHash: repayTx } = await burnerSend(
         burnerIndex,
@@ -135,6 +165,17 @@ function PrivateRepayButton({
       );
       await waitForBurnerTx(repayTx);
 
+      // Sweep returned collateral back to shielded pool
+      if (borrowOrder && borrowOrder.collateralAssets.length > 0) {
+        setStep("sweeping");
+        for (const collateralAsset of borrowOrder.collateralAssets) {
+          const returned = await burnerGetTokenBalance(burnerAddress, collateralAsset);
+          if (returned > 0n) {
+            await burnerSweepToPool(burnerIndex, { token: collateralAsset, amount: returned });
+          }
+        }
+      }
+
       setStep("done");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Repay failed");
@@ -144,6 +185,15 @@ function PrivateRepayButton({
 
   if (step === "done") return <span className="text-terminal-green text-[10px]">Repaid</span>;
 
+  function stepLabel() {
+    if (step === "gas") return "Ensuring gas...";
+    if (step === "funding") return "Ensuring repay funds...";
+    if (step === "approving") return "Approving...";
+    if (step === "repaying") return "Repaying...";
+    if (step === "sweeping") return "Sweeping collateral...";
+    return "Repay";
+  }
+
   return (
     <div className="flex flex-col gap-0.5">
       <button
@@ -151,7 +201,7 @@ function PrivateRepayButton({
         disabled={step !== "idle"}
         className="text-[10px] text-terminal-amber border border-terminal-amber px-1.5 py-0.5 hover:bg-terminal-amber hover:text-black transition-colors disabled:opacity-50"
       >
-        {step === "approving" ? "Approving..." : step === "repaying" ? "Repaying..." : "Repay"}
+        {stepLabel()}
       </button>
       {error && <span className="text-[10px] text-terminal-red">{error}</span>}
     </div>
@@ -162,19 +212,36 @@ function PrivateRepayButton({
 
 function PrivateRedeemButton({
   burnerIndex,
+  burnerAddress,
   loan,
+  borrowAssetInfo,
 }: {
   burnerIndex: number;
+  burnerAddress: string;
   loan: Loan;
+  borrowAssetInfo: AssetInfo | undefined;
 }) {
-  const { burnerSend } = useUnlink();
-  const [step, setStep] = useState<"idle" | "redeeming" | "done">("idle");
+  const {
+    balances,
+    burnerFund,
+    burnerSend,
+    burnerGetBalance,
+    burnerGetTokenBalance,
+    burnerSweepToPool,
+    waitForConfirmation,
+  } = useUnlink();
+  const [step, setStep] = useState<"idle" | "gas" | "redeeming" | "sweeping" | "done">("idle");
   const [error, setError] = useState<string | null>(null);
 
   async function handleRedeem() {
     setError(null);
-    setStep("redeeming");
+    const deps = { balances, burnerGetBalance, burnerGetTokenBalance, burnerFund, waitForConfirmation };
     try {
+      // Ensure burner has gas for redeem + sweep
+      setStep("gas");
+      await ensureAsset(deps, burnerIndex, burnerAddress, NATIVE_TOKEN, GAS_RESERVE, "MON");
+
+      setStep("redeeming");
       const tokenId = await publicClient.readContract({
         address: CONTRACT_ADDRESS,
         abi: CONTRACT_ABI,
@@ -192,6 +259,16 @@ function PrivateRedeemButton({
         })
       );
       await waitForBurnerTx(txHash);
+
+      // Sweep redeemed borrow asset back to shielded pool
+      if (borrowAssetInfo) {
+        setStep("sweeping");
+        const redeemed = await burnerGetTokenBalance(burnerAddress, borrowAssetInfo.address);
+        if (redeemed > 0n) {
+          await burnerSweepToPool(burnerIndex, { token: borrowAssetInfo.address, amount: redeemed });
+        }
+      }
+
       setStep("done");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Redeem failed");
@@ -202,6 +279,13 @@ function PrivateRedeemButton({
   if (loan.status !== "repaid" && loan.status !== "liquidated") return null;
   if (step === "done") return <span className="text-terminal-green text-[10px]">Redeemed</span>;
 
+  function stepLabel() {
+    if (step === "gas") return "Ensuring gas...";
+    if (step === "redeeming") return "Redeeming...";
+    if (step === "sweeping") return "Sweeping to pool...";
+    return "Redeem";
+  }
+
   return (
     <div className="flex flex-col gap-0.5">
       <button
@@ -209,7 +293,7 @@ function PrivateRedeemButton({
         disabled={step !== "idle"}
         className="text-[10px] text-terminal-green border border-terminal-green px-1.5 py-0.5 hover:bg-terminal-green hover:text-black transition-colors disabled:opacity-50"
       >
-        {step === "redeeming" ? "Redeeming..." : "Redeem"}
+        {stepLabel()}
       </button>
       {error && <span className="text-[10px] text-terminal-red">{error}</span>}
     </div>
@@ -233,7 +317,7 @@ function PrivateLendOrderRow({
     <tr className="border-b border-terminal-border text-xs">
       <td className="py-1 px-2 text-terminal-muted">#{order.orderId}</td>
       <td className="py-1 px-2">
-        {formatTokenAmount(order.amount, borrowAsset?.decimals ?? 6, 0)}{" "}
+        {formatTokenAmount(order.amount, borrowAsset?.decimals ?? 6, 2)}{" "}
         {borrowAsset?.symbol}
       </td>
       <td className="py-1 px-2">
@@ -265,7 +349,7 @@ function PrivateBorrowOrderRow({
     <tr className="border-b border-terminal-border text-xs">
       <td className="py-1 px-2 text-terminal-muted">#{order.orderId}</td>
       <td className="py-1 px-2">
-        {formatTokenAmount(order.amount, borrowAsset?.decimals ?? 6, 0)}{" "}
+        {formatTokenAmount(order.amount, borrowAsset?.decimals ?? 6, 2)}{" "}
         {borrowAsset?.symbol}
       </td>
       <td className="py-1 px-2">
@@ -288,12 +372,14 @@ function PrivateLoanRow({
   burnerAddress,
   assets,
   side,
+  borrowOrder,
 }: {
   loan: Loan;
   burnerIndex: number;
   burnerAddress: string;
   assets: ReturnType<typeof useAssets>["data"];
   side: "lend" | "borrow";
+  borrowOrder?: BorrowOrder;
 }) {
   const borrowAsset = assets?.borrowAssets.find(
     (a) => a.address.toLowerCase() === loan.borrowAsset.toLowerCase()
@@ -305,6 +391,8 @@ function PrivateLoanRow({
     liquidated: "text-terminal-red",
     defaulted: "text-terminal-amber",
   };
+
+  const isSettled = loan.status === "repaid" || loan.status === "liquidated";
 
   return (
     <tr className="border-b border-terminal-border text-xs">
@@ -324,12 +412,25 @@ function PrivateLoanRow({
       <td className="py-1 px-2">
         <div className="flex flex-col gap-1">
           {side === "borrow" && loan.status === "active" && (
-            <PrivateRepayButton burnerIndex={burnerIndex} loan={loan} decimals={dec} />
+            <PrivateRepayButton
+              burnerIndex={burnerIndex}
+              burnerAddress={burnerAddress}
+              loan={loan}
+              decimals={dec}
+              borrowOrder={borrowOrder}
+              assets={assets}
+            />
           )}
-          {side === "lend" && (loan.status === "repaid" || loan.status === "liquidated") && (
-            <PrivateRedeemButton burnerIndex={burnerIndex} loan={loan} />
+          {side === "lend" && isSettled && (
+            <PrivateRedeemButton
+              burnerIndex={burnerIndex}
+              burnerAddress={burnerAddress}
+              loan={loan}
+              borrowAssetInfo={borrowAsset}
+            />
           )}
-          {(loan.status === "repaid" || loan.status === "liquidated") && borrowAsset && (
+          {/* Lend side: fallback sweep for redeemed borrow asset */}
+          {side === "lend" && isSettled && borrowAsset && (
             <SweepButton
               burnerIndex={burnerIndex}
               burnerAddress={burnerAddress}
@@ -338,6 +439,23 @@ function PrivateLoanRow({
               symbol={borrowAsset.symbol}
             />
           )}
+          {/* Borrow side: fallback sweep for each returned collateral asset */}
+          {side === "borrow" && isSettled && borrowOrder?.collateralAssets.map((colAddr) => {
+            const colAsset = assets?.collateralAssets.find(
+              (a) => a.address.toLowerCase() === colAddr.toLowerCase()
+            );
+            if (!colAsset) return null;
+            return (
+              <SweepButton
+                key={colAddr}
+                burnerIndex={burnerIndex}
+                burnerAddress={burnerAddress}
+                token={colAddr}
+                decimals={colAsset.decimals}
+                symbol={colAsset.symbol}
+              />
+            );
+          })}
         </div>
       </td>
     </tr>
@@ -363,7 +481,8 @@ export function PrivatePositions() {
     totalLendOrders + totalBorrowOrders + totalLenderLoans + totalBorrowerLoans > 0;
 
   const LOAN_HEADERS = ["ID", "Principal", "Rate", "Matures", "Status", "Action"];
-  const ORDER_HEADERS = ["ID", "Amount", "Fill", "Rate", "Action"];
+  const LEND_ORDER_HEADERS = ["ID", "Amount", "Fill", "Min Rate", "Action"];
+  const BORROW_ORDER_HEADERS = ["ID", "Amount", "Fill", "Max Rate", "Action"];
 
   return (
     <div className="flex flex-col bg-terminal-panel border border-terminal-border overflow-auto">
@@ -400,7 +519,7 @@ export function PrivatePositions() {
                     <table className="w-full text-xs">
                       <thead>
                         <tr className="border-b border-terminal-border">
-                          {ORDER_HEADERS.map((h) => (
+                          {LEND_ORDER_HEADERS.map((h) => (
                             <th key={h} className="py-1 px-2 text-left text-terminal-muted font-normal text-[10px] uppercase">
                               {h}
                             </th>
@@ -459,7 +578,7 @@ export function PrivatePositions() {
                     <table className="w-full text-xs">
                       <thead>
                         <tr className="border-b border-terminal-border">
-                          {ORDER_HEADERS.map((h) => (
+                          {BORROW_ORDER_HEADERS.map((h) => (
                             <th key={h} className="py-1 px-2 text-left text-terminal-muted font-normal text-[10px] uppercase">
                               {h}
                             </th>
@@ -493,6 +612,7 @@ export function PrivatePositions() {
                             burnerAddress={p.burner.burnerAddress}
                             assets={assets}
                             side="borrow"
+                            borrowOrder={p.borrowOrders.find((o) => o.orderId === l.borrowOrderId)}
                           />
                         ))}
                       </tbody>

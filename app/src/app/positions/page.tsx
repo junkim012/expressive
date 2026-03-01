@@ -4,6 +4,8 @@ import { useState } from "react";
 import { useMyPositions } from "@/hooks/usePositions";
 import { useAssets } from "@/hooks/useAssets";
 import { LoanDetailModal } from "@/components/positions/LoanDetailModal";
+import { PrivatePositions } from "@/components/positions/PrivatePositions";
+import { useWalletMode } from "@/lib/walletMode";
 import type { LendOrder, BorrowOrder, Loan } from "@/types";
 import {
   formatRate,
@@ -17,7 +19,7 @@ import {
   formatHealthFactor,
   healthColor,
 } from "@/lib/format";
-import { useReadContract } from "wagmi";
+import { useReadContract, useAccount } from "wagmi";
 import { CONTRACT_ADDRESS, CONTRACT_ABI } from "@/lib/contract";
 
 // ── Health cell ───────────────────────────────────────────────────────────────
@@ -84,7 +86,7 @@ function LendOrdersTable({ orders }: { orders: LendOrder[] }) {
     <table className="w-full text-xs">
       <thead>
         <tr className="border-b border-terminal-border">
-          {["ID", "Asset", "Amount", "Fill", "Rate", "Max LTV", "Max LLTV", "Duration", "Status"].map((h) => (
+          {["ID", "Asset", "Amount", "Fill", "Min Rate", "Max LTV", "Max LLTV", "Max Dur", "Status"].map((h) => (
             <th key={h} className="py-1.5 px-4 text-left text-terminal-muted font-normal text-[10px] uppercase">
               {h}
             </th>
@@ -138,7 +140,7 @@ function BorrowOrdersTable({ orders }: { orders: BorrowOrder[] }) {
     <table className="w-full text-xs">
       <thead>
         <tr className="border-b border-terminal-border">
-          {["ID", "Asset", "Amount", "Fill", "Rate", "Min LTV", "Min LLTV", "Duration", "FOK", "Status"].map((h) => (
+          {["ID", "Asset", "Amount", "Fill", "Max Rate", "Min LTV", "Min LLTV", "Min Dur", "FOK", "Status"].map((h) => (
             <th key={h} className="py-1.5 px-4 text-left text-terminal-muted font-normal text-[10px] uppercase">
               {h}
             </th>
@@ -277,7 +279,9 @@ function HistorySection({ loans, onSelect }: { loans: Loan[]; onSelect: (id: str
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function PositionsPage() {
-  const { lendOrders, borrowOrders, lenderLoans, borrowerLoans, address } = useMyPositions();
+  const { mode } = useWalletMode();
+  const { address } = useAccount();
+  const { lendOrders, borrowOrders, lenderLoans, borrowerLoans } = useMyPositions();
   const [selectedLoan, setSelectedLoan] = useState<string | null>(null);
 
   const allLenderLoans = lenderLoans.data ?? [];
@@ -292,6 +296,16 @@ export default function PositionsPage() {
     return (
       <div className="flex items-center justify-center h-[calc(100vh-40px)] text-terminal-muted text-sm">
         Connect wallet to view positions
+      </div>
+    );
+  }
+
+  if (mode === "private") {
+    return (
+      <div className="overflow-auto h-[calc(100vh-40px)]">
+        <div className="max-w-7xl mx-auto p-4 flex flex-col gap-4">
+          <PrivatePositions />
+        </div>
       </div>
     );
   }

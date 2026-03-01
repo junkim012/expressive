@@ -79,7 +79,7 @@ wait_for_backend() {
   local max_tries=30
   for i in $(seq 1 $max_tries); do
     local health
-    health=$(curl -sf http://localhost:3001/health 2>/dev/null || echo '{}')
+    health=$(curl -sf http://localhost:3002/health 2>/dev/null || echo '{}')
     local up
     up=$(echo "$health" | jq -r '.ok // false')
     if [[ "$up" == "true" ]]; then
@@ -88,6 +88,6 @@ wait_for_backend() {
     fi
     sleep 1
   done
-  echo -e "  ${RED}✗ Backend not responding after ${max_tries}s. Is 03_start_backend.sh running?${NC}"
+  echo -e "  ${RED}✗ Backend not responding after ${max_tries}s on :3002. Is 03_start_backend.sh running?${NC}"
   exit 1
 }

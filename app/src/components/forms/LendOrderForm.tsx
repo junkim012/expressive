@@ -12,8 +12,9 @@ import { useAssets } from "@/hooks/useAssets";
 import { CONTRACT_ADDRESS, CONTRACT_ABI, ERC20_ABI, MAX_UINT256, NATIVE_TOKEN, GAS_RESERVE } from "@/lib/contract";
 import { parsePctToBps, parseLtvToBps, parseDurationToSeconds, parseTokenAmount, formatTokenAmount } from "@/lib/format";
 import { encodeBurnerCall, waitForBurnerTx } from "@/lib/burnerClient";
-import { getNextBurnerIndex, addBurnerForWallet } from "@/lib/burnerStorage";
+import { addBurnerForWallet } from "@/lib/burnerStorage";
 import { useWalletMode } from "@/lib/walletMode";
+import { ensureAsset } from "@/lib/ensureAsset";
 
 interface FormState {
   borrowAsset: string;
@@ -83,18 +84,14 @@ export function LendOrderForm() {
     createBurner,
     burnerFund,
     burnerSend,
+    burnerGetBalance,
+    burnerGetTokenBalance,
     waitForConfirmation,
   } = useUnlink();
   const { mode } = useWalletMode();
   const [form, setForm] = useState<FormState>(EMPTY);
   const [error, setError] = useState<string | null>(null);
   const [selectedBurnerIdx, setSelectedBurnerIdx] = useState<BurnerIndex>(0);
-
-  useEffect(() => {
-    if (!address) return;
-    const next = Math.min(getNextBurnerIndex(address), 2) as BurnerIndex;
-    setSelectedBurnerIdx(next);
-  }, [address]);
   const [step, setStep] = useState<
     "idle" | "approving" | "placing" | "done" |
     "private:deriving" | "private:gas" | "private:funding" | "private:approving" | "private:placing"
@@ -198,12 +195,7 @@ export function LendOrderForm() {
 
     const dec = selectedAsset?.decimals ?? 6;
     const amountRaw = parseTokenAmount(form.amount, dec);
-    const shieldedBalance = balances[form.borrowAsset.toLowerCase()] ?? 0n;
-    if (shieldedBalance < amountRaw) {
-      return setError(
-        `Insufficient Unlink shielded balance (${formatTokenAmount(shieldedBalance.toString(), dec)} ${selectedAsset?.symbol ?? ""}). Deposit more via Unlink.`
-      );
-    }
+    const deps = { balances, burnerGetBalance, burnerGetTokenBalance, burnerFund, waitForConfirmation };
 
     try {
       // Step 1: derive burner
@@ -211,18 +203,13 @@ export function LendOrderForm() {
       const burnerIndex = selectedBurnerIdx;
       const burner = await createBurner(burnerIndex);
 
-      // Step 2: fund burner with native MON for gas from shielded pool
+      // Step 2: ensure burner has gas (tops up shortfall only)
       setStep("private:gas");
-      const gasResult = await burnerFund(burnerIndex, { token: NATIVE_TOKEN, amount: GAS_RESERVE });
-      await waitForConfirmation(gasResult.relayId);
+      await ensureAsset(deps, burnerIndex, burner.address, NATIVE_TOKEN, GAS_RESERVE, "MON");
 
-      // Step 3: fund burner with borrow asset from shielded pool
+      // Step 3: ensure burner has borrow asset (tops up shortfall only)
       setStep("private:funding");
-      const fundResult = await burnerFund(burnerIndex, {
-        token: form.borrowAsset,
-        amount: amountRaw,
-      });
-      await waitForConfirmation(fundResult.relayId);
+      await ensureAsset(deps, burnerIndex, burner.address, form.borrowAsset, amountRaw, selectedAsset?.symbol ?? "");
 
       // Step 3: approve
       setStep("private:approving");

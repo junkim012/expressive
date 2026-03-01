@@ -25,21 +25,21 @@ set -a; source "$ENV_FILE"; set +a
 
 # Write Next.js env file (NEXT_PUBLIC_ vars must be present at build time)
 cat > "$APP_DIR/.env.local" << EOF
-NEXT_PUBLIC_API_URL=http://localhost:3001
-NEXT_PUBLIC_WS_URL=ws://localhost:3001/ws/orderbook
+NEXT_PUBLIC_API_URL=http://localhost:3002
+NEXT_PUBLIC_WS_URL=ws://localhost:3002/ws/orderbook
 NEXT_PUBLIC_CONTRACT_ADDRESS=$CONTRACT_ADDRESS
 NEXT_PUBLIC_CHAIN_ID=31337
 NEXT_PUBLIC_RPC_URL=http://localhost:8545
 EOF
 
 echo "Starting frontend..."
-echo "  API:              http://localhost:3001"
+echo "  API:              http://localhost:3002"
 echo "  CONTRACT_ADDRESS: $CONTRACT_ADDRESS"
 echo "  Chain ID:         31337"
 echo ""
-echo "Open http://localhost:3000 in your browser."
+echo "Open http://localhost:3010 in your browser."
 echo "Import an Anvil private key into MetaMask (network: http://localhost:8545, chain 31337)."
 echo ""
 
 cd "$APP_DIR"
-npm run dev
+PORT=3010 npm run dev

@@ -52,10 +52,10 @@ kill_port() {
   fi
 }
 
-banner "Clearing ports 8545 · 3001 · 3000..."
+banner "Clearing ports 8545 · 3002 · 3010..."
 kill_port 8545
-kill_port 3001
-kill_port 3000
+kill_port 3002
+kill_port 3010
 
 # ── Step 1: Anvil ─────────────────────────────────────────────────────────────
 banner "1/4  Starting Anvil..."
@@ -95,7 +95,7 @@ ENV_FILE="$REPO_ROOT/e2e/.env.local"
 set -a; source "$ENV_FILE"; set +a
 
 export DB_PATH="$REPO_ROOT/backend/data/local.db"
-export PORT=3001
+export PORT=3002
 export POLL_INTERVAL_MS=1000
 
 mkdir -p "$REPO_ROOT/backend/data"
@@ -105,7 +105,7 @@ PIDS+=($!)
 
 # Wait up to 15s for backend health endpoint
 for i in $(seq 1 15); do
-  if curl -sf http://localhost:3001/health &>/dev/null; then
+  if curl -sf http://localhost:3002/health &>/dev/null; then
     ok "Backend ready  (log: $BACKEND_LOG)"
     break
   fi
@@ -122,14 +122,14 @@ banner "4/4  Starting frontend..."
 FRONTEND_LOG=/tmp/el-frontend.log
 
 cat > "$REPO_ROOT/app/.env.local" <<EOF
-NEXT_PUBLIC_API_URL=http://localhost:3001
-NEXT_PUBLIC_WS_URL=ws://localhost:3001/ws/orderbook
+NEXT_PUBLIC_API_URL=http://localhost:3002
+NEXT_PUBLIC_WS_URL=ws://localhost:3002/ws/orderbook
 NEXT_PUBLIC_CONTRACT_ADDRESS=$CONTRACT_ADDRESS
 NEXT_PUBLIC_CHAIN_ID=31337
 NEXT_PUBLIC_RPC_URL=http://localhost:8545
 EOF
 
-(cd "$REPO_ROOT/app" && unset PORT && npm run dev) >"$FRONTEND_LOG" 2>&1 &
+(cd "$REPO_ROOT/app" && PORT=3010 npm run dev) >"$FRONTEND_LOG" 2>&1 &
 PIDS+=($!)
 ok "Frontend starting  (log: $FRONTEND_LOG)"
 
@@ -137,8 +137,8 @@ ok "Frontend starting  (log: $FRONTEND_LOG)"
 echo ""
 echo -e "${BOLD}Full stack running:${NC}"
 echo -e "  Anvil:    ${GREEN}http://localhost:8545${NC}  (chain 31337)"
-echo -e "  Backend:  ${GREEN}http://localhost:3001${NC}"
-echo -e "  Frontend: ${GREEN}http://localhost:3000${NC}"
+echo -e "  Backend:  ${GREEN}http://localhost:3002${NC}"
+echo -e "  Frontend: ${GREEN}http://localhost:3010${NC}"
 echo ""
 echo "MetaMask: add network http://localhost:8545 (chain 31337)"
 echo "          import any Anvil private key from $ANVIL_LOG"

@@ -9,10 +9,11 @@ import {
 import { useUnlink } from "@unlink-xyz/react";
 import { useAssets } from "@/hooks/useAssets";
 import { CONTRACT_ADDRESS, CONTRACT_ABI, ERC20_ABI, MAX_UINT256, NATIVE_TOKEN, GAS_RESERVE } from "@/lib/contract";
-import { parsePctToBps, parseLtvToBps, parseDurationToSeconds, parseTokenAmount, formatTokenAmount } from "@/lib/format";
+import { parsePctToBps, parseLtvToBps, parseDurationToSeconds, parseTokenAmount } from "@/lib/format";
 import { encodeBurnerCall, waitForBurnerTx } from "@/lib/burnerClient";
-import { getNextBurnerIndex, addBurnerForWallet } from "@/lib/burnerStorage";
+import { addBurnerForWallet } from "@/lib/burnerStorage";
 import { useWalletMode } from "@/lib/walletMode";
+import { ensureAsset } from "@/lib/ensureAsset";
 
 interface CollateralRow {
   asset: string;
@@ -89,18 +90,14 @@ export function BorrowOrderForm() {
     createBurner,
     burnerFund,
     burnerSend,
+    burnerGetBalance,
+    burnerGetTokenBalance,
     waitForConfirmation,
   } = useUnlink();
   const { mode } = useWalletMode();
   const [form, setForm] = useState<FormState>(EMPTY);
   const [error, setError] = useState<string | null>(null);
   const [selectedBurnerIdx, setSelectedBurnerIdx] = useState<BurnerIndex>(0);
-
-  useEffect(() => {
-    if (!address) return;
-    const next = Math.min(getNextBurnerIndex(address), 2) as BurnerIndex;
-    setSelectedBurnerIdx(next);
-  }, [address]);
 
   // "idle" | "approving-N" (approving collateral index N) | "placing" | "done"
   // or private steps
@@ -259,37 +256,22 @@ export function BorrowOrderForm() {
       return parseTokenAmount(r.amount, colAsset?.decimals ?? 18);
     });
 
-    // Check shielded balances for all collateral
-    for (let i = 0; i < validRows.length; i++) {
-      const row = validRows[i];
-      const colAsset = assets?.collateralAssets.find((a) => a.address === row.asset);
-      const shielded = balances[row.asset.toLowerCase()] ?? 0n;
-      const needed = collateralAmounts[i];
-      if (shielded < needed) {
-        return setError(
-          `Insufficient shielded balance for ${colAsset?.symbol ?? row.asset}. Needed: ${formatTokenAmount(needed.toString(), colAsset?.decimals ?? 18)}, have: ${formatTokenAmount(shielded.toString(), colAsset?.decimals ?? 18)}`
-        );
-      }
-    }
+    const deps = { balances, burnerGetBalance, burnerGetTokenBalance, burnerFund, waitForConfirmation };
 
     try {
       // Derive burner
       const burnerIndex = selectedBurnerIdx;
       const burner = await createBurner(burnerIndex);
 
-      // Fund burner with native MON for gas from shielded pool
+      // Ensure burner has gas (tops up shortfall only)
       setStep("private:gas");
-      const gasResult = await burnerFund(burnerIndex, { token: NATIVE_TOKEN, amount: GAS_RESERVE });
-      await waitForConfirmation(gasResult.relayId);
+      await ensureAsset(deps, burnerIndex, burner.address, NATIVE_TOKEN, GAS_RESERVE, "MON");
 
-      // Fund burner for each collateral asset
+      // Ensure burner has each collateral asset (tops up shortfall only)
       for (let i = 0; i < validRows.length; i++) {
         setStep(`private:funding-${i}`);
-        const fundResult = await burnerFund(burnerIndex, {
-          token: validRows[i].asset,
-          amount: collateralAmounts[i],
-        });
-        await waitForConfirmation(fundResult.relayId);
+        const colAsset = assets?.collateralAssets.find((a) => a.address === validRows[i].asset);
+        await ensureAsset(deps, burnerIndex, burner.address, validRows[i].asset, collateralAmounts[i], colAsset?.symbol ?? "");
       }
 
       // Approve each collateral asset

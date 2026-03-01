@@ -250,7 +250,7 @@ solver_bot() {
 
     # ── Fetch open orders and find all compatible pairs ────────────────────
     local orders
-    orders=$(curl -sf "http://localhost:3001/api/v1/orders?status=open" 2>/dev/null \
+    orders=$(curl -sf "http://localhost:3002/api/v1/orders?status=open" 2>/dev/null \
       || echo '{"orders":[]}')
 
     local n_lend n_borrow
