@@ -57,6 +57,7 @@ export function runMigrations(): void {
 
     CREATE INDEX IF NOT EXISTS loans_lender   ON loans(lender);
     CREATE INDEX IF NOT EXISTS loans_borrower ON loans(borrower);
+    CREATE INDEX IF NOT EXISTS loans_tx_hash  ON loans(tx_hash);
 
     CREATE TABLE IF NOT EXISTS loan_events (
       id           INTEGER PRIMARY KEY AUTOINCREMENT,

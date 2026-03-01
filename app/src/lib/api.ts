@@ -81,6 +81,12 @@ export async function fetchBatches(params?: {
   return get("/batches", p);
 }
 
+// Batch loans
+export async function fetchBatchLoans(windowId: string): Promise<Loan[]> {
+  const res = await get<{ loans: Loan[] }>(`/batches/${windowId}/loans`);
+  return res.loans;
+}
+
 // Assets
 export async function fetchAssets(): Promise<AssetsResponse> {
   return get<AssetsResponse>("/assets");

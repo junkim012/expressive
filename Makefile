@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install anvil deploy backend frontend dev staging action logs test-contracts
+.PHONY: help install anvil deploy backend frontend dev staging action solver solver-logs logs test-contracts
 
 REPO_ROOT := $(shell pwd)
 
@@ -9,7 +9,7 @@ help:
 	@echo "Expressive Lending — local development"
 	@echo ""
 	@echo "  Setup"
-	@echo "    make install       Install npm deps for backend and app"
+	@echo "    make install       Install npm deps for backend, app, and bot"
 	@echo ""
 	@echo "  Individual services  (each runs in the foreground — open a new terminal per step)"
 	@echo "    make anvil         Start Anvil local chain on :8545"
@@ -21,7 +21,9 @@ help:
 	@echo "    make dev           Run the full local stack (background, logs to /tmp/*.log)"
 	@echo "    make staging       Start backend + frontend against Monad testnet (no Anvil)"
 	@echo "    make logs          Tail all service logs with color-coded prefixes"
+	@echo "    make solver-logs   Tail solver bot logs with color-coded prefixes"
 	@echo "    make action        Run lender + borrower bots (requires make dev running)"
+	@echo "    make solver        Run 3 competing solver bots (MODE=local|staging)"
 	@echo ""
 	@echo "  Contracts"
 	@echo "    make test          Run Foundry test suite"
@@ -31,6 +33,7 @@ help:
 install:
 	cd backend && npm install
 	cd app && npm install
+	cd bot && npm install
 
 # ── Individual services ───────────────────────────────────────────────────────
 anvil:
@@ -57,9 +60,16 @@ staging: ## Start backend + frontend pointing to Monad testnet (no Anvil, no dep
 logs:
 	@bash e2e/logs.sh $(LOGS)
 
+solver-logs:
+	@bash bot/solver-logs.sh
+
 # ── Activity bots ─────────────────────────────────────────────────────────────
 action:
 	@bash e2e/action.sh
+
+# ── Solver bots ──────────────────────────────────────────────────────────────
+solver:
+	@bash bot/deploy-solver.sh $(or $(MODE),local)
 
 # ── Contracts ─────────────────────────────────────────────────────────────────
 test:

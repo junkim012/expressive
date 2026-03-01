@@ -143,6 +143,11 @@ Full detail view of the batch auction system. All data polled from the contract 
 - Paginated, most recent first
 - Data sourced from backend (indexed `BatchExecuted` events)
 
+**Current Submissions table** 
+
+Show the current submissions in the auction. Show the submittor address, the number of matches made, readable timestamp,  surplus, transaction hash if it exists. 
+
+
 ---
 
 ## Loan Detail Modal

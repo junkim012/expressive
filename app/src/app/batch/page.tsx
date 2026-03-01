@@ -5,15 +5,19 @@ import { useReadContracts } from "wagmi";
 import { useQuery } from "@tanstack/react-query";
 import { useBatchWindow } from "@/hooks/useBatchWindow";
 import { useAssets } from "@/hooks/useAssets";
-import { fetchBatches } from "@/lib/api";
+import { useCurrentSubmissions } from "@/hooks/useCurrentSubmissions";
+import { fetchBatches, fetchBatchLoans } from "@/lib/api";
 import { CONTRACT_ADDRESS, CONTRACT_ABI } from "@/lib/contract";
 import {
   formatCountdown,
+  formatDate,
   formatDateTime,
+  formatRate,
   formatTokenAmount,
+  timeRemaining,
   truncateAddress,
 } from "@/lib/format";
-import type { Batch } from "@/types";
+import type { Batch, Loan } from "@/types";
 
 // ── Current window ────────────────────────────────────────────────────────────
 
@@ -170,6 +174,77 @@ function CurrentWindowPanel() {
   );
 }
 
+// ── Current submissions ──────────────────────────────────────────────────
+
+function CurrentSubmissionsTable() {
+  const { submissions, isLoading } = useCurrentSubmissions();
+  const { data: assets } = useAssets();
+  const borrowAsset = assets?.borrowAssets[0];
+
+  if (isLoading) {
+    return (
+      <div className="p-4 text-center text-terminal-muted text-xs">Scanning for submissions...</div>
+    );
+  }
+
+  return (
+    <div>
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-b border-terminal-border">
+            {["Solver", "Pairs", "Time", "Surplus", "Tx"].map((h) => (
+              <th key={h} className="py-2 px-4 text-left text-terminal-muted font-normal text-[10px] uppercase">
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {submissions.length === 0 ? (
+            <tr>
+              <td colSpan={5} className="py-6 text-center text-terminal-muted">
+                No submissions in current window
+              </td>
+            </tr>
+          ) : (
+            submissions.map((sub) => (
+              <tr
+                key={sub.txHash}
+                className={`border-b border-terminal-border hover:bg-white/[0.02] text-xs ${!sub.success ? "opacity-50" : ""}`}
+              >
+                <td className="py-1.5 px-4">{truncateAddress(sub.solver)}</td>
+                <td className="py-1.5 px-4">{sub.pairCount}</td>
+                <td className="py-1.5 px-4 text-terminal-muted">{formatDateTime(sub.timestamp)}</td>
+                <td className="py-1.5 px-4 tabular-nums">
+                  {sub.success && sub.surplus !== null ? (
+                    <span className="text-terminal-green">
+                      {formatTokenAmount(sub.surplus.toString(), borrowAsset?.decimals ?? 6, 2)}
+                      {borrowAsset && <span className="text-terminal-muted ml-1">{borrowAsset.symbol}</span>}
+                    </span>
+                  ) : (
+                    <span className="text-terminal-red">Reverted</span>
+                  )}
+                </td>
+                <td className="py-1.5 px-4">
+                  <a
+                    href={`https://testnet.monadexplorer.com/tx/${sub.txHash}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-terminal-muted hover:text-terminal-text transition-colors text-[10px]"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {truncateAddress(sub.txHash, 6)} ↗
+                  </a>
+                </td>
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // ── Batch history ─────────────────────────────────────────────────────────────
 
 function BatchHistoryTable() {
@@ -262,40 +337,147 @@ function BatchRow({
   borrowSymbol: string;
 }) {
   const isEmpty = batch.pairCount === 0 || batch.solver === null;
+  const expandable = !isEmpty;
+  const [expanded, setExpanded] = useState(false);
 
   return (
-    <tr className={`border-b border-terminal-border hover:bg-white/[0.02] text-xs ${isEmpty ? "opacity-50" : ""}`}>
-      <td className="py-1.5 px-4 text-terminal-muted">#{batch.windowId}</td>
-      <td className="py-1.5 px-4 text-terminal-muted">{formatDateTime(batch.executedAt)}</td>
-      <td className="py-1.5 px-4">
-        {batch.solver ? truncateAddress(batch.solver) : <span className="text-terminal-muted">—</span>}
-      </td>
-      <td className="py-1.5 px-4">
-        {isEmpty ? (
-          <span className="text-terminal-muted">No matches</span>
-        ) : (
-          <span>{batch.pairCount}</span>
-        )}
-      </td>
-      <td className="py-1.5 px-4 text-terminal-green tabular-nums">
-        {isEmpty ? (
-          <span className="text-terminal-muted">—</span>
-        ) : (
-          `${formatTokenAmount(batch.totalSurplus, borrowDecimals, 2)} ${borrowSymbol}`
-        )}
-      </td>
-      <td className="py-1.5 px-4">
-        <a
-          href={`https://testnet.monadexplorer.com/tx/${batch.txHash}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-terminal-muted hover:text-terminal-text transition-colors text-[10px]"
-          onClick={(e) => e.stopPropagation()}
-        >
-          {truncateAddress(batch.txHash, 6)} ↗
-        </a>
-      </td>
-    </tr>
+    <>
+      <tr
+        className={`border-b border-terminal-border hover:bg-white/[0.02] text-xs ${isEmpty ? "opacity-50" : ""} ${expandable ? "cursor-pointer" : ""}`}
+        onClick={() => expandable && setExpanded((v) => !v)}
+      >
+        <td className="py-1.5 px-4 text-terminal-muted">
+          {expandable && (
+            <span className="inline-block w-3 mr-1 text-terminal-muted">{expanded ? "▼" : "▶"}</span>
+          )}
+          #{batch.windowId}
+        </td>
+        <td className="py-1.5 px-4 text-terminal-muted">{formatDateTime(batch.executedAt)}</td>
+        <td className="py-1.5 px-4">
+          {batch.solver ? truncateAddress(batch.solver) : <span className="text-terminal-muted">—</span>}
+        </td>
+        <td className="py-1.5 px-4">
+          {isEmpty ? (
+            <span className="text-terminal-muted">No matches</span>
+          ) : (
+            <span>{batch.pairCount}</span>
+          )}
+        </td>
+        <td className="py-1.5 px-4 text-terminal-green tabular-nums">
+          {isEmpty ? (
+            <span className="text-terminal-muted">—</span>
+          ) : (
+            `${formatTokenAmount(batch.totalSurplus, borrowDecimals, 2)} ${borrowSymbol}`
+          )}
+        </td>
+        <td className="py-1.5 px-4">
+          <a
+            href={`https://testnet.monadexplorer.com/tx/${batch.txHash}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-terminal-muted hover:text-terminal-text transition-colors text-[10px]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {truncateAddress(batch.txHash, 6)} ↗
+          </a>
+        </td>
+      </tr>
+      {expanded && (
+        <tr>
+          <td colSpan={6} className="p-0">
+            <BatchLoansPanel
+              windowId={batch.windowId}
+              borrowDecimals={borrowDecimals}
+              borrowSymbol={borrowSymbol}
+            />
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+const STATUS_COLORS: Record<string, string> = {
+  active: "text-terminal-green",
+  repaid: "text-blue-400",
+  liquidated: "text-terminal-red",
+  defaulted: "text-terminal-amber",
+};
+
+function BatchLoansPanel({
+  windowId,
+  borrowDecimals,
+  borrowSymbol,
+}: {
+  windowId: string;
+  borrowDecimals: number;
+  borrowSymbol: string;
+}) {
+  const { data: loans, isLoading, error } = useQuery({
+    queryKey: ["batchLoans", windowId],
+    queryFn: () => fetchBatchLoans(windowId),
+    staleTime: 60_000,
+  });
+
+  if (isLoading) {
+    return (
+      <div className="pl-8 py-3 text-xs text-terminal-muted bg-white/[0.02]">
+        Loading loans...
+      </div>
+    );
+  }
+
+  if (error || !loans) {
+    return (
+      <div className="pl-8 py-3 text-xs text-terminal-red bg-white/[0.02]">
+        Failed to load loans
+      </div>
+    );
+  }
+
+  if (loans.length === 0) {
+    return (
+      <div className="pl-8 py-3 text-xs text-terminal-muted bg-white/[0.02]">
+        No loans found
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-white/[0.02] border-t border-terminal-border">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-b border-terminal-border">
+            {["Loan ID", "Lender", "Borrower", "Principal", "Rate", "Maturity", "Status"].map((h) => (
+              <th key={h} className="py-1.5 px-4 text-left text-terminal-muted font-normal text-[10px] uppercase first:pl-8">
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {loans.map((loan) => (
+            <tr key={loan.loanId} className="border-b border-terminal-border/50 hover:bg-white/[0.02]">
+              <td className="py-1.5 px-4 pl-8">#{loan.loanId}</td>
+              <td className="py-1.5 px-4">{truncateAddress(loan.lender)}</td>
+              <td className="py-1.5 px-4">{truncateAddress(loan.borrower)}</td>
+              <td className="py-1.5 px-4 tabular-nums">
+                {formatTokenAmount(loan.principal, borrowDecimals, 2)} {borrowSymbol}
+              </td>
+              <td className="py-1.5 px-4">{formatRate(loan.rate)}</td>
+              <td className="py-1.5 px-4 text-terminal-muted">
+                {timeRemaining(loan.maturityDate)}
+              </td>
+              <td className="py-1.5 px-4">
+                <span className={STATUS_COLORS[loan.status] ?? "text-terminal-muted"}>
+                  {loan.status}
+                </span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -310,6 +492,13 @@ export default function BatchPage() {
         </h1>
 
         <CurrentWindowPanel />
+
+        <div className="border border-terminal-border bg-terminal-panel">
+          <div className="px-4 py-2 border-b border-terminal-border">
+            <span className="text-xs font-semibold tracking-widest text-terminal-text">CURRENT SUBMISSIONS</span>
+          </div>
+          <CurrentSubmissionsTable />
+        </div>
 
         <div className="border border-terminal-border bg-terminal-panel">
           <div className="px-4 py-2 border-b border-terminal-border">

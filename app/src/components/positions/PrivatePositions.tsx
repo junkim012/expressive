@@ -398,7 +398,7 @@ function PrivateLoanRow({
     <tr className="border-b border-terminal-border text-xs">
       <td className="py-1 px-2 text-terminal-muted">#{loan.loanId}</td>
       <td className="py-1 px-2">
-        {formatTokenAmount(loan.principal, dec, 0)} {borrowAsset?.symbol}
+        {formatTokenAmount(loan.principal, dec, 2)} {borrowAsset?.symbol}
       </td>
       <td className="py-1 px-2">{formatRate(loan.rate)}</td>
       <td className="py-1 px-2 text-terminal-muted">

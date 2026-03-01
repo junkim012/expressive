@@ -129,12 +129,43 @@ echo -e "  Contract: ${GREEN}$CONTRACT_ADDRESS${NC}"
 echo ""
 echo "Rabby/MetaMask: switch to Monad Testnet (chain 10143)"
 echo ""
-echo "Live logs:"
-echo "  tail -f $BACKEND_LOG"
-echo "  tail -f $FRONTEND_LOG"
-echo ""
-echo "Press Ctrl+C to stop everything."
-echo ""
+
+if [[ -n "${LOGS:-}" ]]; then
+  GRAY='\033[0;37m'
+  echo -e "Tailing logs: ${BOLD}$LOGS${NC}  (Ctrl+C to stop)"
+  echo ""
+  for svc in $LOGS; do
+    case "$svc" in
+      backend)
+        printf -v _p "${GREEN}[BACKEND ]${NC} "
+        tail -f "$BACKEND_LOG" | awk -v p="$_p" '{ print p $0; fflush() }' &
+        PIDS+=($!)
+        ;;
+      frontend)
+        printf -v _p "${YELLOW}[FRONTEND]${NC} "
+        tail -f "$FRONTEND_LOG" | awk -v p="$_p" '{ print p $0; fflush() }' &
+        PIDS+=($!)
+        ;;
+      anvil)
+        printf -v _p "${GRAY}[ANVIL   ]${NC} "
+        if [[ -f /tmp/el-anvil.log ]]; then
+          tail -f /tmp/el-anvil.log | awk -v p="$_p" '{ print p $0; fflush() }' &
+          PIDS+=($!)
+        else
+          info "anvil log not found (staging has no Anvil) — skipping"
+        fi
+        ;;
+      *) info "Unknown log service '$svc' — skipping" ;;
+    esac
+  done
+else
+  echo "Live logs:"
+  echo "  tail -f $BACKEND_LOG"
+  echo "  tail -f $FRONTEND_LOG"
+  echo ""
+  echo "Press Ctrl+C to stop everything."
+  echo ""
+fi
 
 # Keep script alive so the trap fires on Ctrl+C
 wait

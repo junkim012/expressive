@@ -336,6 +336,36 @@ export const ERC20_ABI = [
   },
 ] as const satisfies Abi;
 
+// ABI for decoding submitBatch transaction input data (not in CONTRACT_ABI since
+// the frontend never calls it, but needed to identify solver submissions on-chain)
+export const SUBMIT_BATCH_ABI = [
+  {
+    type: "function",
+    name: "submitBatch",
+    stateMutability: "nonpayable",
+    inputs: [
+      {
+        name: "pairs",
+        type: "tuple[]",
+        components: [
+          { name: "lendOrderId", type: "uint256" },
+          { name: "borrowOrderId", type: "uint256" },
+          { name: "amount", type: "uint256" },
+        ],
+      },
+      {
+        name: "consumptions",
+        type: "tuple[]",
+        components: [
+          { name: "orderId", type: "uint256" },
+          { name: "totalConsumed", type: "uint256" },
+        ],
+      },
+    ],
+    outputs: [],
+  },
+] as const satisfies Abi;
+
 export const BASIS_POINTS = 10_000n;
 export const SECONDS_PER_YEAR = 365n * 24n * 3600n;
 export const MAX_UINT256 = 2n ** 256n - 1n;
