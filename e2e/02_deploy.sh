@@ -91,6 +91,30 @@ echo "✓ WBTC:        $WBTC"
 echo "✓ WETH:        $WETH"
 echo "✓ Start block: $START_BLOCK"
 echo ""
+
+# ── Approvals: each participant → all tokens → protocol ──────────────────────
+# Done here with cast send (not in forge script) to avoid Foundry multi-signer
+# nonce-tracking bugs when switching vm.startBroadcast accounts.
+echo "Setting up token approvals..."
+MAX_UINT=115792089237316195423570985008687907853269984665640564039457584007913129639935
+
+for key in \
+  "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d" \
+  "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a" \
+  "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6"
+  # "0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926b"  # SOLVER — TODO
+  # "0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba"  # LIQUIDATOR — TODO
+do
+  for token in "$USDC" "$WBTC" "$WETH"; do
+    cast send "$token" \
+      "approve(address,uint256)" "$PROTOCOL" "$MAX_UINT" \
+      --rpc-url http://localhost:8545 \
+      --private-key "$key" \
+      --quiet
+  done
+done
+echo "✓ Approvals set"
+echo ""
 echo "Written: deployments/local.json"
 echo "Written: e2e/.env.local"
 echo ""

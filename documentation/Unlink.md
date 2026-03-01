@@ -47,8 +47,8 @@ User's Real Wallet
       │
       │  (after batch execution → loan lifecycle)
       │
-      ├── repay(loanId)           ← called by burner
-      ├── redeemNFT(loanId)       ← called by burner (lender)
+      ├── repay(loanId)           ← called by borrower's burner
+      ├── redeem(tokenId)         ← called by lender's burner (tokenId = loanToNft[loanId])
       │
       ▼
 [Burner EOA receives assets]
@@ -164,13 +164,26 @@ await burnerClient.writeContract({
 After the batch executes and a loan is created with `owner = burner.address`:
 
 ```tsx
-// Borrower repays from burner
+// Borrower repays from burner.
+// repay() calls transferFrom(borrower, contract, totalRepayment) internally,
+// so the burner must approve the contract before calling repay — two separate txs.
+const interest = await publicClient.readContract({
+  address: CONTRACT_ADDRESS,
+  abi: expressiveLendingAbi,
+  functionName: 'getAccruedInterest',
+  args: [loanId],
+})
+const repayAmount = principal + interest
+
+// Step 1: approve (burner → contract)
 await burnerClient.writeContract({
   address: BORROW_ASSET_ADDRESS,
   abi: erc20Abi,
   functionName: 'approve',
   args: [CONTRACT_ADDRESS, repayAmount],
 })
+
+// Step 2: repay
 await burnerClient.writeContract({
   address: CONTRACT_ADDRESS,
   abi: expressiveLendingAbi,
@@ -179,11 +192,18 @@ await burnerClient.writeContract({
 })
 
 // Lender redeems NFT from burner (after loan is Repaid or Liquidated)
+// tokenId must be looked up: contract.loanToNft(loanId)
+const tokenId = await publicClient.readContract({
+  address: CONTRACT_ADDRESS,
+  abi: expressiveLendingAbi,
+  functionName: 'loanToNft',
+  args: [loanId],
+})
 await burnerClient.writeContract({
   address: CONTRACT_ADDRESS,
   abi: expressiveLendingAbi,
-  functionName: 'redeemNFT',
-  args: [loanId],
+  functionName: 'redeem',
+  args: [tokenId],
 })
 ```
 
@@ -263,9 +283,36 @@ GET /api/v1/loans?borrower=<burnerAddress>
 
 ---
 
+## Outstanding Questions
+
+These must be resolved before or during implementation.
+
+**Q1 — Gas (MON) for burners**
+Does `useBurner().fund()` support funding native MON, or only ERC20 tokens? Burners need MON for gas on every transaction (approve, place, repay, redeem, sweep). If native funding isn't supported, a separate gas provisioning mechanism is needed.
+
+**Q2 — Private positions in `useMyPositions`**
+The existing hook fetches positions by connected wallet address. Burner-owned orders and loans won't appear there. Decide: do private positions merge into the main positions panel (requires extending the hook to also query all known burner addresses from localStorage), or do they live in a separate "Private Positions" panel?
+
+**Q3 — `isBorrower` / `isLender` checks in existing UI**
+`LoanDetailModal` gates the Repay button with `address === onChainLoan.borrower`. For private loans, the borrower is the burner, not the connected wallet, so the button never renders. The UI needs a way to recognise that the current user controls a given burner address before showing action buttons.
+
+**Q4 — Borrower post-loan UX**
+When a borrow order fills, the principal is sent to the burner (`borrowOrder.owner`). The borrower needs those funds in their real wallet to actually use them. Open questions:
+- Does the borrower sweep principal out to their real wallet immediately after matching?
+- At repayment time, do they re-fund the burner (sweep back in from the shielded pool)?
+- What is the step-by-step UI flow for this?
+
+**Q5 — Lender `redeem` button**
+The current app has no redeem functionality for lenders anywhere (private or otherwise). This feature needs to be designed and added to `LoanDetailModal` or `MyPositions` as part of this work. For private lenders it must use the burner client; for regular lenders it can use wagmi's `useWriteContract`.
+
+**Q6 — Multi-collateral funding for borrow orders**
+Borrow orders accept multiple collateral assets. The spec's `fund()` call shows a single token. The burner needs a separate `fund()` call per collateral asset — confirm the SDK supports this and document the loop.
+
+---
+
 ## References
 
 - Unlink SDK docs: https://docs.unlink.xyz/sdk/defi
 - Unlink React SDK: https://docs.unlink.xyz/sdk/react
-- `ExpressiveLending.sol` — `placeLendOrder`, `placeBorrowOrder`, `repay`, `redeemNFT`
+- `ExpressiveLending.sol` — `placeLendOrder`, `placeBorrowOrder`, `repay`, `redeem(tokenId)`, `loanToNft(loanId)`
 - Events: `LendOrderPlaced`, `BorrowOrderPlaced`, `LoanCreated`

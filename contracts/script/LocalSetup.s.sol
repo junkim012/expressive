@@ -25,26 +25,24 @@ contract MockOracle is IOracle {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Deploy script
+// Deploy script  (single deployer broadcast — no multi-signer approvals)
+// Approvals are done post-deploy via cast send in 02_deploy.sh.
+//
 // Run from contracts/: forge script script/LocalSetup.s.sol --rpc-url http://localhost:8545 --broadcast
 // Output written to ../deployments/local.json (repo root)
 // ─────────────────────────────────────────────────────────────────────────────
 
 contract LocalSetup is Script {
-    // Anvil deterministic accounts
-    uint256 constant DEPLOYER_KEY   = 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80;
-    uint256 constant LENDER1_KEY    = 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d;
-    uint256 constant LENDER2_KEY    = 0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a;
-    uint256 constant BORROWER_KEY   = 0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6;
-    uint256 constant LIQUIDATOR_KEY = 0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba;
+    // Anvil deterministic account 0 (deployer)
+    uint256 constant DEPLOYER_KEY = 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80;
 
     address constant LENDER1    = 0x70997970C51812dc3A010C7d01b50e0d17dc79C8;
     address constant LENDER2    = 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC;
     address constant BORROWER   = 0x90F79bf6EB2c4f870365E785982E1f101E93b906;
+    address constant SOLVER     = 0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65;
     address constant LIQUIDATOR = 0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc;
 
     function run() external {
-        // ── Deploy tokens and protocol ────────────────────────────────────────
         vm.startBroadcast(DEPLOYER_KEY);
 
         MockERC20 usdc = new MockERC20("USD Coin",    "USDC", 6);
@@ -75,32 +73,18 @@ contract LocalSetup is Script {
             oracles
         );
 
-        // Fund participants
-        usdc.mint(LENDER1,    10_000e6);
-        usdc.mint(LENDER2,    10_000e6);
-        usdc.mint(LIQUIDATOR, 50_000e6);
-        wbtc.mint(BORROWER,   5e8);       // 5 BTC
-        weth.mint(BORROWER,   50 ether);
+        // Fund all participants with generous amounts of every token.
+        // Any address can act as lender or borrower from the UI.
+        uint256 USDC_AMOUNT = 1_000_000e6;  // 1 000 000 USDC
+        uint256 WBTC_AMOUNT = 100e8;         // 100 WBTC
+        uint256 WETH_AMOUNT = 1_000 ether;   // 1 000 WETH
 
-        vm.stopBroadcast();
+        usdc.mint(LENDER1,    USDC_AMOUNT); wbtc.mint(LENDER1,    WBTC_AMOUNT); weth.mint(LENDER1,    WETH_AMOUNT);
+        usdc.mint(LENDER2,    USDC_AMOUNT); wbtc.mint(LENDER2,    WBTC_AMOUNT); weth.mint(LENDER2,    WETH_AMOUNT);
+        usdc.mint(BORROWER,   USDC_AMOUNT); wbtc.mint(BORROWER,   WBTC_AMOUNT); weth.mint(BORROWER,   WETH_AMOUNT);
+        usdc.mint(SOLVER,     USDC_AMOUNT); wbtc.mint(SOLVER,     WBTC_AMOUNT); weth.mint(SOLVER,     WETH_AMOUNT);
+        usdc.mint(LIQUIDATOR, USDC_AMOUNT); wbtc.mint(LIQUIDATOR, WBTC_AMOUNT); weth.mint(LIQUIDATOR, WETH_AMOUNT);
 
-        // ── Approvals (each user approves max to protocol) ────────────────────
-        vm.startBroadcast(LENDER1_KEY);
-        usdc.approve(address(protocol), type(uint256).max);
-        vm.stopBroadcast();
-
-        vm.startBroadcast(LENDER2_KEY);
-        usdc.approve(address(protocol), type(uint256).max);
-        vm.stopBroadcast();
-
-        vm.startBroadcast(BORROWER_KEY);
-        wbtc.approve(address(protocol), type(uint256).max);
-        weth.approve(address(protocol), type(uint256).max);
-        usdc.approve(address(protocol), type(uint256).max); // for repayment
-        vm.stopBroadcast();
-
-        vm.startBroadcast(LIQUIDATOR_KEY);
-        usdc.approve(address(protocol), type(uint256).max);
         vm.stopBroadcast();
 
         // ── Write deployment output ───────────────────────────────────────────
