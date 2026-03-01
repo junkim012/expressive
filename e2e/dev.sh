@@ -40,6 +40,23 @@ for cmd in anvil forge cast jq node npm; do
   fi
 done
 
+# Kill any stale process occupying a given port
+kill_port() {
+  local port=$1
+  local pids
+  pids=$(lsof -ti :"$port" 2>/dev/null || true)
+  if [[ -n "$pids" ]]; then
+    info "Killing stale process(es) on port $port (pids: $pids)"
+    echo "$pids" | xargs kill -9 2>/dev/null || true
+    sleep 0.5
+  fi
+}
+
+banner "Clearing ports 8545 · 3001 · 3000..."
+kill_port 8545
+kill_port 3001
+kill_port 3000
+
 # ── Step 1: Anvil ─────────────────────────────────────────────────────────────
 banner "1/4  Starting Anvil..."
 
@@ -82,6 +99,7 @@ export PORT=3001
 export POLL_INTERVAL_MS=1000
 
 mkdir -p "$REPO_ROOT/backend/data"
+rm -f "$DB_PATH" "$DB_PATH-shm" "$DB_PATH-wal"
 (cd "$REPO_ROOT/backend" && npm run dev) >"$BACKEND_LOG" 2>&1 &
 PIDS+=($!)
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
   useAccount,
   useReadContract,
@@ -74,12 +74,21 @@ export function LendOrderForm() {
   const [error, setError] = useState<string | null>(null);
   const [step, setStep] = useState<"idle" | "approving" | "placing" | "done">("idle");
 
+  // Keep a ref so useEffect closures always see the latest step without needing
+  // it in the dependency array (which would re-run the effect on every step change).
+  const stepRef = useRef(step);
+  stepRef.current = step;
+
   const set = (key: keyof FormState) => (val: string | string[]) =>
     setForm((prev) => ({ ...prev, [key]: val }));
 
-  // Read current allowance
+  const selectedAsset = assets?.borrowAssets.find(
+    (a) => a.address === form.borrowAsset
+  );
+
   const borrowAssetAddress = form.borrowAsset as `0x${string}` | "";
-  const { data: allowance, refetch: refetchAllowance } = useReadContract({
+
+  const { data: allowance } = useReadContract({
     address: borrowAssetAddress || undefined,
     abi: ERC20_ABI,
     functionName: "allowance",
@@ -100,44 +109,17 @@ export function LendOrderForm() {
     hash: txHash,
   });
 
-  const selectedAsset = assets?.borrowAssets.find(
-    (a) => a.address === form.borrowAsset
-  );
-
-  async function handleSubmit() {
-    setError(null);
-    if (!address) return setError("Connect wallet first");
-    if (!form.borrowAsset) return setError("Select borrow asset");
-    if (form.acceptableCollateral.length === 0) return setError("Select at least one collateral");
-    if (!form.amount || parseFloat(form.amount) <= 0) return setError("Enter amount");
-    if (!form.minRate || parseFloat(form.minRate) <= 0) return setError("Enter min rate");
-    if (!form.maxLtv || parseFloat(form.maxLtv) <= 0) return setError("Enter max LTV");
-    if (!form.maxLltv || parseFloat(form.maxLltv) <= 0) return setError("Enter max LLTV");
-    if (!form.durationValue || parseFloat(form.durationValue) <= 0) return setError("Enter duration");
-
+  // Extracted so it can be called both from handleSubmit (when already approved)
+  // and automatically from the useEffect after an approval tx confirms.
+  const placeOrder = useCallback(() => {
     const dec = selectedAsset?.decimals ?? 6;
     const amountRaw = parseTokenAmount(form.amount, dec);
-
-    // Check allowance
-    const currentAllowance = (allowance as bigint | undefined) ?? 0n;
-    if (currentAllowance < amountRaw) {
-      setStep("approving");
-      writeContract({
-        address: form.borrowAsset as `0x${string}`,
-        abi: ERC20_ABI,
-        functionName: "approve",
-        args: [CONTRACT_ADDRESS, MAX_UINT256],
-      });
-      return;
-    }
-
-    // Place order
-    setStep("placing");
     const minRate = BigInt(parsePctToBps(form.minRate));
     const maxLtv = BigInt(parseLtvToBps(form.maxLtv));
     const maxLltv = BigInt(parseLtvToBps(form.maxLltv));
     const maxDuration = BigInt(parseDurationToSeconds(form.durationValue, form.durationUnit));
 
+    setStep("placing");
     writeContract({
       address: CONTRACT_ADDRESS,
       abi: CONTRACT_ABI,
@@ -152,23 +134,61 @@ export function LendOrderForm() {
         amountRaw,
       ],
     });
-  }
+  }, [form, selectedAsset, writeContract]);
 
-  // After approval tx confirmed, re-check allowance and place
-  if (isTxSuccess && step === "approving") {
-    refetchAllowance();
-    reset();
-    setStep("idle");
-    // Now user clicks submit again to place the order
-  }
+  // React to transaction confirmation. We use txHash in the dep array so this
+  // fires exactly once per confirmed tx (isTxSuccess stays true until reset()).
+  useEffect(() => {
+    if (!isTxSuccess || !txHash) return;
 
-  if (isTxSuccess && step === "placing") {
-    setStep("done");
-    setTimeout(() => {
-      setForm(EMPTY);
-      setStep("idle");
+    if (stepRef.current === "approving") {
+      // Approval confirmed — immediately proceed to place the order.
+      // reset() clears txHash so the next writeContract gets a fresh receipt watcher.
       reset();
-    }, 3000);
+      placeOrder();
+    } else if (stepRef.current === "placing") {
+      setStep("done");
+      const t = setTimeout(() => {
+        setForm(EMPTY);
+        setStep("idle");
+        reset();
+      }, 3000);
+      return () => clearTimeout(t);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isTxSuccess, txHash]);
+
+  function handleSubmit() {
+    setError(null);
+    if (!address) return setError("Connect wallet first");
+    if (!form.borrowAsset) return setError("Select borrow asset");
+    if (form.acceptableCollateral.length === 0) return setError("Select at least one collateral");
+    if (!form.amount || parseFloat(form.amount) <= 0) return setError("Enter amount");
+    if (!form.minRate || parseFloat(form.minRate) <= 0) return setError("Enter min rate");
+    if (!form.maxLtv || parseFloat(form.maxLtv) <= 0) return setError("Enter max LTV");
+    if (!form.maxLltv || parseFloat(form.maxLltv) <= 0) return setError("Enter max LLTV");
+    if (!form.durationValue || parseFloat(form.durationValue) <= 0) return setError("Enter duration");
+
+    const dec = selectedAsset?.decimals ?? 6;
+    const amountRaw = parseTokenAmount(form.amount, dec);
+    const currentAllowance = (allowance as bigint | undefined) ?? 0n;
+
+    if (currentAllowance < amountRaw) {
+      // Need approval first. After the approve tx confirms, the useEffect above
+      // will automatically call placeOrder() — no second click required.
+      setStep("approving");
+      console.log("address ", form.borrowAsset)
+      console.log("CONTRACT_ADDRESS: ", CONTRACT_ADDRESS)
+      console.log("MAX_UINT256: ", MAX_UINT256)
+      writeContract({
+        address: form.borrowAsset as `0x${string}`,
+        abi: ERC20_ABI,
+        functionName: "approve",
+        args: [CONTRACT_ADDRESS, MAX_UINT256],
+      });
+    } else {
+      placeOrder();
+    }
   }
 
   const isLoading = isWritePending || isTxLoading;
@@ -182,9 +202,10 @@ export function LendOrderForm() {
     );
   }
 
-  const balanceDisplay = balance && selectedAsset
-    ? `Balance: ${(Number(balance as bigint) / 10 ** selectedAsset.decimals).toFixed(2)} ${selectedAsset.symbol}`
-    : "";
+  const balanceDisplay =
+    balance && selectedAsset
+      ? `Balance: ${(Number(balance as bigint) / 10 ** selectedAsset.decimals).toFixed(2)} ${selectedAsset.symbol}`
+      : "";
 
   return (
     <div className="flex flex-col gap-3 p-3">
@@ -306,11 +327,15 @@ export function LendOrderForm() {
         </div>
       )}
 
-      {step === "approving" && isTxLoading && (
-        <div className="text-terminal-amber text-xs">Approving token spend...</div>
+      {step === "approving" && isLoading && (
+        <div className="text-terminal-amber text-xs">
+          Step 1/2 — Approving token spend...
+        </div>
       )}
-      {step === "approving" && isTxSuccess && (
-        <div className="text-terminal-green text-xs">✓ Approved — click Place Order to continue</div>
+      {step === "placing" && isLoading && (
+        <div className="text-terminal-amber text-xs">
+          Step 2/2 — Placing lend order...
+        </div>
       )}
 
       {isConnected ? (
@@ -321,10 +346,8 @@ export function LendOrderForm() {
         >
           {isLoading
             ? step === "approving"
-              ? "Approving..."
-              : "Placing..."
-            : step === "approving" && isTxSuccess
-            ? "Place Order"
+              ? "Approving... (1/2)"
+              : "Placing... (2/2)"
             : "Place Lend Order"}
         </button>
       ) : (

@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install anvil deploy backend frontend dev test-contracts
+.PHONY: help install anvil deploy backend frontend dev action logs test-contracts
 
 REPO_ROOT := $(shell pwd)
 
@@ -19,6 +19,8 @@ help:
 	@echo ""
 	@echo "  One-command spinup"
 	@echo "    make dev           Run the full local stack (background, logs to /tmp/*.log)"
+	@echo "    make logs          Tail all service logs with color-coded prefixes"
+	@echo "    make action        Run lender + borrower bots (requires make dev running)"
 	@echo ""
 	@echo "  Contracts"
 	@echo "    make test          Run Foundry test suite"
@@ -45,6 +47,14 @@ frontend:
 # ── Full local stack ──────────────────────────────────────────────────────────
 dev:
 	@bash e2e/dev.sh
+
+# ── Observability ─────────────────────────────────────────────────────────────
+logs:
+	@bash e2e/logs.sh $(LOGS)
+
+# ── Activity bots ─────────────────────────────────────────────────────────────
+action:
+	@bash e2e/action.sh
 
 # ── Contracts ─────────────────────────────────────────────────────────────────
 test:

@@ -100,27 +100,35 @@ async function processTick(
         txHash: log.transactionHash ?? '',
       };
 
+      const args = log.args as any;
       switch (log.eventName) {
         case 'LendOrderPlaced':
-          handleLendOrderPlaced(log.args as any, ctx, newOrderIds);
+          handleLendOrderPlaced(args, ctx, newOrderIds);
+          console.log(`[indexer] LendOrderPlaced  orderId=${args.orderId}  owner=${args.owner}  amount=${args.amount}  block=${ctx.blockNumber}`);
           break;
         case 'BorrowOrderPlaced':
-          handleBorrowOrderPlaced(log.args as any, ctx, newOrderIds);
+          handleBorrowOrderPlaced(args, ctx, newOrderIds);
+          console.log(`[indexer] BorrowOrderPlaced  orderId=${args.orderId}  owner=${args.owner}  amount=${args.amount}  block=${ctx.blockNumber}`);
           break;
         case 'LoanCreated':
-          handleLoanCreated(log.args as any, ctx, updatedOrderIds);
+          handleLoanCreated(args, ctx, updatedOrderIds);
+          console.log(`[indexer] LoanCreated  loanId=${args.loanId}  lendOrderId=${args.lendOrderId}  borrowOrderId=${args.borrowOrderId}  principal=${args.principal}  block=${ctx.blockNumber}`);
           break;
         case 'BatchExecuted':
-          handleBatchExecuted(log.args as any, ctx);
+          handleBatchExecuted(args, ctx);
+          console.log(`[indexer] BatchExecuted  windowId=${args.windowId}  pairCount=${args.pairCount}  totalSurplus=${args.totalSurplus}  solver=${args.solver}  block=${ctx.blockNumber}`);
           break;
         case 'LoanRepaid':
-          handleLoanRepaid(log.args as any, ctx);
+          handleLoanRepaid(args, ctx);
+          console.log(`[indexer] LoanRepaid  loanId=${args.loanId}  block=${ctx.blockNumber}`);
           break;
         case 'LoanLiquidated':
-          handleLoanLiquidated(log.args as any, ctx);
+          handleLoanLiquidated(args, ctx);
+          console.log(`[indexer] LoanLiquidated  loanId=${args.loanId}  liquidator=${args.liquidator}  block=${ctx.blockNumber}`);
           break;
         case 'LoanDefaulted':
-          handleLoanDefaulted(log.args as any, ctx);
+          handleLoanDefaulted(args, ctx);
+          console.log(`[indexer] LoanDefaulted  loanId=${args.loanId}  block=${ctx.blockNumber}`);
           break;
       }
     }

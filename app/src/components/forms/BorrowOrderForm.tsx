@@ -1,9 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
   useAccount,
-  useReadContract,
   useWriteContract,
   useWaitForTransactionReceipt,
 } from "wagmi";
@@ -79,8 +78,12 @@ export function BorrowOrderForm() {
   const { data: assets } = useAssets();
   const [form, setForm] = useState<FormState>(EMPTY);
   const [error, setError] = useState<string | null>(null);
-  const [step, setStep] = useState<"idle" | "approving" | "approving-idx" | "placing" | "done">("idle");
-  const [approvingIndex, setApprovingIndex] = useState(0);
+
+  // "idle" | "approving-N" (approving collateral index N) | "placing" | "done"
+  type Step = "idle" | `approving-${number}` | "placing" | "done";
+  const [step, setStep] = useState<Step>("idle");
+  const stepRef = useRef<Step>("idle");
+  stepRef.current = step;
 
   const set = (key: keyof FormState) => (val: unknown) =>
     setForm((prev) => ({ ...prev, [key]: val }));
@@ -110,92 +113,118 @@ export function BorrowOrderForm() {
     hash: txHash,
   });
 
-  const isLoading = isWritePending || isTxLoading;
+  // Valid (non-empty) collateral rows from the current form state.
+  // We store the snapshot used for the approval chain in a ref so the useEffect
+  // closure always sees the rows that were validated at submit time.
+  const validRowsRef = useRef<CollateralRow[]>([]);
 
-  // Collect collateral assets and amounts
-  const validRows = form.collateralRows.filter((r) => r.asset && r.amount);
+  const placeOrder = useCallback(
+    (rows: CollateralRow[]) => {
+      const borrowAssetInfo = assets?.borrowAssets.find((a) => a.address === form.borrowAsset);
+      const dec = borrowAssetInfo?.decimals ?? 6;
+      const amountRaw = parseTokenAmount(form.amount, dec);
+      const maxRate = BigInt(parsePctToBps(form.maxRate));
+      const minLtv = BigInt(parseLtvToBps(form.minLtv));
+      const minLltv = BigInt(parseLtvToBps(form.minLltv));
+      const minDuration = BigInt(parseDurationToSeconds(form.durationValue, form.durationUnit));
 
-  function placeOrder() {
-    const borrowAssetInfo = assets?.borrowAssets.find((a) => a.address === form.borrowAsset);
-    const dec = borrowAssetInfo?.decimals ?? 6;
-    const amountRaw = parseTokenAmount(form.amount, dec);
-    const maxRate = BigInt(parsePctToBps(form.maxRate));
-    const minLtv = BigInt(parseLtvToBps(form.minLtv));
-    const minLltv = BigInt(parseLtvToBps(form.minLltv));
-    const minDuration = BigInt(parseDurationToSeconds(form.durationValue, form.durationUnit));
+      const collateralAssets = rows.map((r) => r.asset as `0x${string}`);
+      const collateralAmounts = rows.map((r) => {
+        const colAsset = assets?.collateralAssets.find((a) => a.address === r.asset);
+        return parseTokenAmount(r.amount, colAsset?.decimals ?? 18);
+      });
 
-    const collateralAssets = validRows.map((r) => r.asset as `0x${string}`);
-    const collateralAmounts = validRows.map((r) => {
-      const colAsset = assets?.collateralAssets.find((a) => a.address === r.asset);
-      return parseTokenAmount(r.amount, colAsset?.decimals ?? 18);
-    });
+      setStep("placing");
+      writeContract({
+        address: CONTRACT_ADDRESS,
+        abi: CONTRACT_ABI,
+        functionName: "placeBorrowOrder",
+        args: [
+          form.borrowAsset as `0x${string}`,
+          collateralAssets,
+          collateralAmounts,
+          maxRate,
+          minLtv,
+          minDuration,
+          minLltv,
+          amountRaw,
+          form.fillOrKill,
+        ],
+      });
+    },
+    [form, assets, writeContract]
+  );
 
-    setStep("placing");
-    writeContract({
-      address: CONTRACT_ADDRESS,
-      abi: CONTRACT_ABI,
-      functionName: "placeBorrowOrder",
-      args: [
-        form.borrowAsset as `0x${string}`,
-        collateralAssets,
-        collateralAmounts,
-        maxRate,
-        minLtv,
-        minDuration,
-        minLltv,
-        amountRaw,
-        form.fillOrKill,
-      ],
-    });
-  }
+  const approveAt = useCallback(
+    (idx: number, rows: CollateralRow[]) => {
+      if (idx >= rows.length) {
+        placeOrder(rows);
+        return;
+      }
+      const row = rows[idx];
+      const colAsset = assets?.collateralAssets.find((a) => a.address === row.asset);
+      const amount = parseTokenAmount(row.amount, colAsset?.decimals ?? 18);
+      setStep(`approving-${idx}`);
+      writeContract({
+        address: row.asset as `0x${string}`,
+        abi: ERC20_ABI,
+        functionName: "approve",
+        args: [CONTRACT_ADDRESS, MAX_UINT256],
+      });
+      void amount; // amount only needed for display; wagmi encodes MAX_UINT256
+    },
+    [assets, writeContract, placeOrder]
+  );
 
-  function approveNext(idx: number) {
-    if (idx >= validRows.length) {
-      placeOrder();
-      return;
-    }
-    const row = validRows[idx];
-    const colAsset = assets?.collateralAssets.find((a) => a.address === row.asset);
-    const amount = parseTokenAmount(row.amount, colAsset?.decimals ?? 18);
-    setApprovingIndex(idx);
-    setStep("approving-idx");
-    writeContract({
-      address: row.asset as `0x${string}`,
-      abi: ERC20_ABI,
-      functionName: "approve",
-      args: [CONTRACT_ADDRESS, MAX_UINT256],
-    });
-  }
+  // Advance the approval chain (or move to place) after each tx confirms.
+  useEffect(() => {
+    if (!isTxSuccess || !txHash) return;
 
-  if (isTxSuccess && step === "approving-idx") {
-    reset();
-    approveNext(approvingIndex + 1);
-  }
+    const current = stepRef.current;
+    const rows = validRowsRef.current;
 
-  if (isTxSuccess && step === "placing") {
-    setStep("done");
-    setTimeout(() => {
-      setForm(EMPTY);
-      setStep("idle");
+    if (current.startsWith("approving-")) {
+      const idx = parseInt(current.replace("approving-", ""), 10);
       reset();
-    }, 3000);
-  }
+      approveAt(idx + 1, rows);
+    } else if (current === "placing") {
+      setStep("done");
+      const t = setTimeout(() => {
+        setForm(EMPTY);
+        setStep("idle");
+        reset();
+      }, 3000);
+      return () => clearTimeout(t);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isTxSuccess, txHash]);
 
-  async function handleSubmit() {
+  function handleSubmit() {
     setError(null);
     if (!address) return setError("Connect wallet first");
     if (!form.borrowAsset) return setError("Select borrow asset");
     if (!form.amount || parseFloat(form.amount) <= 0) return setError("Enter amount");
-    if (validRows.length === 0) return setError("Add at least one collateral row");
     if (!form.maxRate || parseFloat(form.maxRate) <= 0) return setError("Enter max rate");
     if (!form.minLtv || parseFloat(form.minLtv) <= 0) return setError("Enter min LTV");
     if (!form.minLltv || parseFloat(form.minLltv) <= 0) return setError("Enter min LLTV");
     if (!form.durationValue || parseFloat(form.durationValue) <= 0) return setError("Enter duration");
 
-    // Start approval chain
-    setStep("approving");
-    approveNext(0);
+    const validRows = form.collateralRows.filter((r) => r.asset && r.amount);
+    if (validRows.length === 0) return setError("Add at least one collateral row");
+
+    // Snapshot the validated rows for use in the useEffect closure.
+    validRowsRef.current = validRows;
+
+    // Start the approval chain. Each approve confirms → useEffect advances to next.
+    approveAt(0, validRows);
   }
+
+  const isLoading = isWritePending || isTxLoading;
+
+  const approvalIndex = step.startsWith("approving-")
+    ? parseInt(step.replace("approving-", ""), 10)
+    : null;
+  const totalApprovals = validRowsRef.current.length;
 
   if (step === "done") {
     return (
@@ -359,10 +388,13 @@ export function BorrowOrderForm() {
         </div>
       )}
 
-      {(step === "approving" || step === "approving-idx") && isLoading && (
+      {approvalIndex !== null && isLoading && (
         <div className="text-terminal-amber text-xs">
-          Approving collateral {approvingIndex + 1}/{validRows.length}...
+          Approving collateral {approvalIndex + 1}/{totalApprovals}...
         </div>
+      )}
+      {step === "placing" && isLoading && (
+        <div className="text-terminal-amber text-xs">Placing borrow order...</div>
       )}
 
       {isConnected ? (
@@ -371,7 +403,11 @@ export function BorrowOrderForm() {
           disabled={isLoading}
           className="w-full py-2 bg-terminal-amber text-black text-xs font-bold tracking-wider hover:bg-yellow-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors mt-1"
         >
-          {isLoading ? "Processing..." : "Place Borrow Order"}
+          {isLoading
+            ? approvalIndex !== null
+              ? `Approving ${approvalIndex + 1}/${totalApprovals}...`
+              : "Placing..."
+            : "Place Borrow Order"}
         </button>
       ) : (
         <div className="w-full py-2 border border-terminal-border text-terminal-muted text-xs text-center mt-1">
