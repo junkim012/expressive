@@ -28,6 +28,10 @@ We can fund the burner wallet via a shielded wallet via the unlink.burner.fund(.
 
 And before the shielded wallet can fund the burner wallet, the shielded wallet needs to be funded with the native token from the public wallet. 
 
+So the two UX flows we need is
+1. button to deposit the native MON token to the shielded wallet on top of the current USDC/WBTC/WETH. So we would add MON under the "Asset" column in the balances panel. 
+2. another button to fund the native MON token to the burner wallet via the shielded wallet. This can be an adjacent ui component below the BALANCES panel showing the native balance on the burner wallet. This should show the MON balance of the burner wallet. 
+
 ---
 
 ## Privacy Model

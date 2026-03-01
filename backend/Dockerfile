@@ -12,7 +12,6 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY package.json ./
 
 RUN mkdir -p /data
-VOLUME ["/data"]
 
 ENV DB_PATH=/data/index.db
 ENV PORT=3001
