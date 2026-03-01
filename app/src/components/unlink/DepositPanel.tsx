@@ -21,7 +21,7 @@ const STEP_LABELS: Record<Step, string> = {
   preparing:  "1/3 — Preparing deposit...",
   approving:  "2/3 — Approving token...",
   submitting: "3/3 — Submitting deposit...",
-  confirming: "Waiting for Unlink confirmation...",
+  confirming: "Syncing shielded balance...",
   done:       "Deposit confirmed!",
 };
 
@@ -33,7 +33,7 @@ const STEP_LABELS: Record<Step, string> = {
 export function DepositPanel() {
   const { address, isConnected } = useAccount();
   const { data: assets } = useAssets();
-  const { walletExists, balances, deposit, confirmDeposit } = useUnlink();
+  const { walletExists, balances, deposit, refresh } = useUnlink();
 
   const allAssets = [
     ...(assets?.borrowAssets ?? []),
@@ -108,7 +108,7 @@ export function DepositPanel() {
     if (!result) return;
     resetSend();
     setStep("confirming");
-    confirmDeposit(result.relayId)
+    refresh()
       .then(() => {
         setStep("done");
         setTimeout(() => {
@@ -118,7 +118,7 @@ export function DepositPanel() {
         }, 3000);
       })
       .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : "Confirmation failed");
+        setError(err instanceof Error ? err.message : "Sync failed");
         setStep("idle");
       });
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -206,7 +206,7 @@ export function DepositPanel() {
           </div>
           {allAssets.map((a, i) => {
             const wBal = walletBalance(i);
-            const sBal = walletExists ? (balances[a.address] ?? 0n) : 0n;
+            const sBal = walletExists ? (balances[a.address.toLowerCase()] ?? 0n) : 0n;
             if (wBal === 0n && sBal === 0n) return null;
             return (
               <div key={a.address} className="grid grid-cols-3 gap-1">
@@ -220,7 +220,7 @@ export function DepositPanel() {
               </div>
             );
           })}
-          {allAssets.every((a, i) => walletBalance(i) === 0n && (balances[a.address] ?? 0n) === 0n) && (
+          {allAssets.every((a, i) => walletBalance(i) === 0n && (balances[a.address.toLowerCase()] ?? 0n) === 0n) && (
             <span className="text-[10px] text-terminal-muted">No balances found</span>
           )}
         </div>
@@ -265,7 +265,7 @@ export function DepositPanel() {
                 Wallet: {formatTokenAmount(walletBalance(selectedIndex).toString(), selectedAsset.decimals)} {selectedAsset.symbol}
               </span>
               <span className="text-[10px] text-terminal-muted">
-                Shielded: {formatTokenAmount((balances[token] ?? 0n).toString(), selectedAsset.decimals)} {selectedAsset.symbol}
+                Shielded: {formatTokenAmount((balances[token.toLowerCase()] ?? 0n).toString(), selectedAsset.decimals)} {selectedAsset.symbol}
               </span>
             </div>
           )}
