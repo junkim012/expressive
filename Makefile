@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install anvil deploy backend frontend dev action logs test-contracts
+.PHONY: help install anvil deploy backend frontend dev staging action logs test-contracts
 
 REPO_ROOT := $(shell pwd)
 
@@ -19,6 +19,7 @@ help:
 	@echo ""
 	@echo "  One-command spinup"
 	@echo "    make dev           Run the full local stack (background, logs to /tmp/*.log)"
+	@echo "    make staging       Start backend + frontend against Monad testnet (no Anvil)"
 	@echo "    make logs          Tail all service logs with color-coded prefixes"
 	@echo "    make action        Run lender + borrower bots (requires make dev running)"
 	@echo ""
@@ -47,6 +48,10 @@ frontend:
 # ── Full local stack ──────────────────────────────────────────────────────────
 dev:
 	@bash e2e/dev.sh
+
+# ── Monad testnet staging ─────────────────────────────────────────────────────
+staging: ## Start backend + frontend pointing to Monad testnet (no Anvil, no deploy)
+	@bash e2e/staging/staging.sh
 
 # ── Observability ─────────────────────────────────────────────────────────────
 logs:

@@ -5,7 +5,6 @@ import { useAccount } from "wagmi";
 import { useUnlink } from "@unlink-xyz/react";
 import { NATIVE_TOKEN } from "@/lib/contract";
 import { formatTokenAmount, parseTokenAmount } from "@/lib/format";
-import { publicClient } from "@/lib/burnerClient";
 
 const INDICES = [0, 1, 2] as const;
 type BurnerIndex = 0 | 1 | 2;
@@ -17,7 +16,10 @@ type BurnerIndex = 0 | 1 | 2;
  */
 export function BurnerPanel() {
   const { address } = useAccount();
-  const { walletExists, balances, createBurner, burnerFund, waitForConfirmation } = useUnlink();
+  const {
+    walletExists, balances, createBurner,
+    burnerFund, burnerGetBalance, waitForConfirmation, refresh,
+  } = useUnlink();
 
   // Map of burnerIndex → derived address
   const [burnerAddrs, setBurnerAddrs] = useState<Partial<Record<BurnerIndex, string>>>({});
@@ -50,6 +52,7 @@ export function BurnerPanel() {
   }, [walletExists]);
 
   // Poll on-chain native MON balance for each derived address every 5 s
+  // using unlink.burner.getBalance(address) per SDK API reference
   useEffect(() => {
     if (Object.keys(burnerAddrs).length === 0) return;
 
@@ -58,7 +61,7 @@ export function BurnerPanel() {
       const addrs = burnerAddrsRef.current;
       const pairs = await Promise.all(
         (Object.entries(addrs) as [string, string][]).map(async ([idx, addr]) => {
-          const bal = await publicClient.getBalance({ address: addr as `0x${string}` });
+          const bal = await burnerGetBalance(addr);
           return [Number(idx) as BurnerIndex, bal] as [BurnerIndex, bigint];
         })
       );
@@ -68,6 +71,7 @@ export function BurnerPanel() {
     poll();
     const id = setInterval(poll, 5000);
     return () => { cancelled = true; clearInterval(id); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [burnerAddrs]);
 
   async function handleFund(idx: BurnerIndex) {
@@ -81,9 +85,12 @@ export function BurnerPanel() {
       const result = await burnerFund(idx, { token: NATIVE_TOKEN, amount: amountRaw });
       await waitForConfirmation(result.relayId);
 
+      // Refresh shielded balance after funding
+      await refresh();
+
       const addr = burnerAddrs[idx];
       if (addr) {
-        const newBal = await publicClient.getBalance({ address: addr as `0x${string}` });
+        const newBal = await burnerGetBalance(addr);
         setBurnerBals((prev) => ({ ...prev, [idx]: newBal }));
       }
       setDone(idx);

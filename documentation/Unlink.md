@@ -19,6 +19,15 @@ Always: Connect public wallet (Rabby)
                            Orders go via burner
                            (derived from shielded wallet)
 
+
+## Funding Flow
+
+The user's public wallet can never interact with the burner wallet. Because that deanonymizes the burner wallet. So the burner wallet must be funded via the shielded wallet. 
+
+We can fund the burner wallet via a shielded wallet via the unlink.burner.fund(...) function in the docs, except when funding the NATIVE token, it has to be 0xeeee...eeee to indicate the native token address. 
+
+And before the shielded wallet can fund the burner wallet, the shielded wallet needs to be funded with the native token from the public wallet. 
+
 ---
 
 ## Privacy Model
