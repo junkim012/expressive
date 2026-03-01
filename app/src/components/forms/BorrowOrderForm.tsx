@@ -6,9 +6,13 @@ import {
   useWriteContract,
   useWaitForTransactionReceipt,
 } from "wagmi";
+import { useUnlink } from "@unlink-xyz/react";
 import { useAssets } from "@/hooks/useAssets";
 import { CONTRACT_ADDRESS, CONTRACT_ABI, ERC20_ABI, MAX_UINT256 } from "@/lib/contract";
-import { parsePctToBps, parseLtvToBps, parseDurationToSeconds, parseTokenAmount } from "@/lib/format";
+import { parsePctToBps, parseLtvToBps, parseDurationToSeconds, parseTokenAmount, formatTokenAmount } from "@/lib/format";
+import { encodeBurnerCall, waitForBurnerTx } from "@/lib/burnerClient";
+import { getNextBurnerIndex, addBurnerForWallet } from "@/lib/burnerStorage";
+import { useWalletMode } from "@/lib/walletMode";
 
 interface CollateralRow {
   asset: string;
@@ -76,11 +80,28 @@ function Input({
 export function BorrowOrderForm() {
   const { address, isConnected } = useAccount();
   const { data: assets } = useAssets();
+  const {
+    walletExists,
+    balances,
+    createBurner,
+    burnerFund,
+    burnerSend,
+    waitForConfirmation,
+  } = useUnlink();
+  const { mode } = useWalletMode();
   const [form, setForm] = useState<FormState>(EMPTY);
   const [error, setError] = useState<string | null>(null);
 
   // "idle" | "approving-N" (approving collateral index N) | "placing" | "done"
-  type Step = "idle" | `approving-${number}` | "placing" | "done";
+  // or private steps
+  type Step =
+    | "idle"
+    | `approving-${number}`
+    | "placing"
+    | "done"
+    | `private:funding-${number}`
+    | `private:approving-${number}`
+    | "private:placing";
   const [step, setStep] = useState<Step>("idle");
   const stepRef = useRef<Step>("idle");
   stepRef.current = step;
@@ -199,7 +220,117 @@ export function BorrowOrderForm() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isTxSuccess, txHash]);
 
+  async function handlePrivateSubmit() {
+    setError(null);
+    if (!address) return setError("Connect wallet first");
+    if (!walletExists) return setError("Set up your Unlink wallet first");
+    if (!form.borrowAsset) return setError("Select borrow asset");
+    if (!form.amount || parseFloat(form.amount) <= 0) return setError("Enter amount");
+    if (!form.maxRate || parseFloat(form.maxRate) <= 0) return setError("Enter max rate");
+    if (!form.minLtv || parseFloat(form.minLtv) <= 0) return setError("Enter min LTV");
+    if (!form.minLltv || parseFloat(form.minLltv) <= 0) return setError("Enter min LLTV");
+    if (!form.durationValue || parseFloat(form.durationValue) <= 0) return setError("Enter duration");
+
+    const validRows = form.collateralRows.filter((r) => r.asset && r.amount);
+    if (validRows.length === 0) return setError("Add at least one collateral row");
+
+    const borrowAssetInfo = assets?.borrowAssets.find((a) => a.address === form.borrowAsset);
+    const dec = borrowAssetInfo?.decimals ?? 6;
+    const amountRaw = parseTokenAmount(form.amount, dec);
+    const maxRate = BigInt(parsePctToBps(form.maxRate));
+    const minLtv = BigInt(parseLtvToBps(form.minLtv));
+    const minLltv = BigInt(parseLtvToBps(form.minLltv));
+    const minDuration = BigInt(parseDurationToSeconds(form.durationValue, form.durationUnit));
+
+    const collateralAssets = validRows.map((r) => r.asset as `0x${string}`);
+    const collateralAmounts = validRows.map((r) => {
+      const colAsset = assets?.collateralAssets.find((a) => a.address === r.asset);
+      return parseTokenAmount(r.amount, colAsset?.decimals ?? 18);
+    });
+
+    // Check shielded balances for all collateral
+    for (let i = 0; i < validRows.length; i++) {
+      const row = validRows[i];
+      const colAsset = assets?.collateralAssets.find((a) => a.address === row.asset);
+      const shielded = balances[row.asset] ?? 0n;
+      const needed = collateralAmounts[i];
+      if (shielded < needed) {
+        return setError(
+          `Insufficient shielded balance for ${colAsset?.symbol ?? row.asset}. Needed: ${formatTokenAmount(needed.toString(), colAsset?.decimals ?? 18)}, have: ${formatTokenAmount(shielded.toString(), colAsset?.decimals ?? 18)}`
+        );
+      }
+    }
+
+    try {
+      // Derive burner (index shown as 1/N deriving implicitly)
+      const burnerIndex = getNextBurnerIndex(address);
+      const burner = await createBurner(burnerIndex);
+
+      // Fund burner for each collateral asset
+      // TODO (Q1): burner also needs native MON for gas — currently unresolved.
+      for (let i = 0; i < validRows.length; i++) {
+        setStep(`private:funding-${i}`);
+        const fundResult = await burnerFund(burnerIndex, {
+          token: validRows[i].asset,
+          amount: collateralAmounts[i],
+        });
+        await waitForConfirmation(fundResult.relayId);
+      }
+
+      // Approve each collateral asset
+      for (let i = 0; i < validRows.length; i++) {
+        setStep(`private:approving-${i}`);
+        const { txHash } = await burnerSend(
+          burnerIndex,
+          encodeBurnerCall({
+            address: validRows[i].asset as `0x${string}`,
+            abi: ERC20_ABI,
+            functionName: "approve",
+            args: [CONTRACT_ADDRESS, collateralAmounts[i]],
+          })
+        );
+        await waitForBurnerTx(txHash);
+      }
+
+      // Place borrow order
+      setStep("private:placing");
+      const { txHash: placeTxHash } = await burnerSend(
+        burnerIndex,
+        encodeBurnerCall({
+          address: CONTRACT_ADDRESS,
+          abi: CONTRACT_ABI,
+          functionName: "placeBorrowOrder",
+          args: [
+            form.borrowAsset as `0x${string}`,
+            collateralAssets,
+            collateralAmounts,
+            maxRate,
+            minLtv,
+            minDuration,
+            minLltv,
+            amountRaw,
+            form.fillOrKill,
+          ],
+        })
+      );
+      await waitForBurnerTx(placeTxHash);
+
+      addBurnerForWallet(address, {
+        burnerIndex,
+        burnerAddress: burner.address,
+        orderType: "borrow",
+      });
+
+      setStep("done");
+      setTimeout(() => { setForm(EMPTY); setStep("idle"); }, 3000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Private order failed");
+      setStep("idle");
+    }
+  }
+
   function handleSubmit() {
+    if (mode === "private") { handlePrivateSubmit(); return; }
     setError(null);
     if (!address) return setError("Connect wallet first");
     if (!form.borrowAsset) return setError("Select borrow asset");
@@ -219,12 +350,30 @@ export function BorrowOrderForm() {
     approveAt(0, validRows);
   }
 
-  const isLoading = isWritePending || isTxLoading;
+  const isPrivateLoading =
+    step.startsWith("private:funding-") ||
+    step.startsWith("private:approving-") ||
+    step === "private:placing";
+  const isLoading = isWritePending || isTxLoading || isPrivateLoading;
 
   const approvalIndex = step.startsWith("approving-")
     ? parseInt(step.replace("approving-", ""), 10)
     : null;
   const totalApprovals = validRowsRef.current.length;
+  const totalCollateral = validRowsRef.current.length;
+
+  function privateStepLabel(): string {
+    if (step.startsWith("private:funding-")) {
+      const i = parseInt(step.replace("private:funding-", ""), 10);
+      return `Funding collateral ${i + 1}/${totalCollateral} from pool...`;
+    }
+    if (step.startsWith("private:approving-")) {
+      const i = parseInt(step.replace("private:approving-", ""), 10);
+      return `Approving collateral ${i + 1}/${totalCollateral}...`;
+    }
+    if (step === "private:placing") return "Placing borrow order...";
+    return "Processing...";
+  }
 
   if (step === "done") {
     return (
@@ -388,31 +537,38 @@ export function BorrowOrderForm() {
         </div>
       )}
 
-      {approvalIndex !== null && isLoading && (
+      {approvalIndex !== null && isLoading && !isPrivateLoading && (
         <div className="text-terminal-amber text-xs">
           Approving collateral {approvalIndex + 1}/{totalApprovals}...
         </div>
       )}
-      {step === "placing" && isLoading && (
+      {step === "placing" && isLoading && !isPrivateLoading && (
         <div className="text-terminal-amber text-xs">Placing borrow order...</div>
       )}
+      {isPrivateLoading && (
+        <div className="text-terminal-amber text-xs">{privateStepLabel()}</div>
+      )}
 
-      {isConnected ? (
+      {!isConnected && mode === "public" ? (
+        <div className="w-full py-2 border border-terminal-border text-terminal-muted text-xs text-center mt-1">
+          Connect wallet to place orders
+        </div>
+      ) : (
         <button
           onClick={handleSubmit}
           disabled={isLoading}
           className="w-full py-2 bg-terminal-amber text-black text-xs font-bold tracking-wider hover:bg-yellow-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors mt-1"
         >
           {isLoading
-            ? approvalIndex !== null
+            ? isPrivateLoading
+              ? privateStepLabel()
+              : approvalIndex !== null
               ? `Approving ${approvalIndex + 1}/${totalApprovals}...`
               : "Placing..."
+            : mode === "private"
+            ? "Place Borrow Order (Private)"
             : "Place Borrow Order"}
         </button>
-      ) : (
-        <div className="w-full py-2 border border-terminal-border text-terminal-muted text-xs text-center mt-1">
-          Connect wallet to place orders
-        </div>
       )}
     </div>
   );

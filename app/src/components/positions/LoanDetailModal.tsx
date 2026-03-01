@@ -1,14 +1,17 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   useReadContracts,
   useWriteContract,
   useWaitForTransactionReceipt,
   useAccount,
 } from "wagmi";
+import { useUnlink } from "@unlink-xyz/react";
 import { useQuery } from "@tanstack/react-query";
 import { CONTRACT_ADDRESS, CONTRACT_ABI, ERC20_ABI, BASIS_POINTS } from "@/lib/contract";
+import { getBurnerAddresses, getBurnerIndexByAddress } from "@/lib/burnerStorage";
+import { encodeBurnerCall, waitForBurnerTx, publicClient } from "@/lib/burnerClient";
 import { fetchLoan } from "@/lib/api";
 import { useAssets } from "@/hooks/useAssets";
 import {
@@ -118,11 +121,24 @@ export function LoanDetailModal({ loanId, onClose }: Props) {
   const healthFactor = contractData?.[1]?.result as bigint | undefined;
   const accruedInterest = contractData?.[2]?.result as bigint | undefined;
 
-  // Write: repay
+  const { burnerSend } = useUnlink();
+
+  // Write: repay (public path)
   const { writeContract, data: repayHash, isPending: isRepayPending, reset: resetRepay } = useWriteContract();
   const { isLoading: isRepayLoading, isSuccess: isRepaySuccess } = useWaitForTransactionReceipt({
     hash: repayHash,
   });
+
+  // Write: redeem (public path)
+  const { writeContract: writeRedeem, data: redeemHash, isPending: isRedeemPending } = useWriteContract();
+  const { isLoading: isRedeemLoading, isSuccess: isRedeemSuccess } = useWaitForTransactionReceipt({
+    hash: redeemHash,
+  });
+
+  // Private action state
+  const [privateRepayStep, setPrivateRepayStep] = useState<"idle" | "approving" | "repaying" | "done">("idle");
+  const [privateRedeemStep, setPrivateRedeemStep] = useState<"idle" | "redeeming" | "done">("idle");
+  const [privateActionError, setPrivateActionError] = useState<string | null>(null);
 
   const loan = loanDetail?.loan;
   const events = loanDetail?.events ?? [];
@@ -132,9 +148,21 @@ export function LoanDetailModal({ loanId, onClose }: Props) {
   );
   const dec = borrowAssetInfo?.decimals ?? 6;
 
+  // Extend ownership checks to include known burner addresses
+  const knownBurners = address ? getBurnerAddresses(address) : [];
+  const isPrivateBorrower =
+    !!onChainLoan && knownBurners.includes(onChainLoan.borrower.toLowerCase());
+  const isPrivateLender =
+    !!onChainLoan && knownBurners.includes(onChainLoan.lender.toLowerCase());
+
   const isBorrower =
-    address && onChainLoan && address.toLowerCase() === onChainLoan.borrower.toLowerCase();
+    (address && onChainLoan && address.toLowerCase() === onChainLoan.borrower.toLowerCase()) ||
+    isPrivateBorrower;
+  const isLender =
+    (address && onChainLoan && address.toLowerCase() === onChainLoan.lender.toLowerCase()) ||
+    isPrivateLender;
   const isActive = loan?.status === "active";
+  const isClosed = loan?.status === "repaid" || loan?.status === "liquidated";
 
   const totalDue =
     onChainLoan && accruedInterest !== undefined
@@ -142,12 +170,102 @@ export function LoanDetailModal({ loanId, onClose }: Props) {
       : undefined;
 
   function handleRepay() {
+    if (isPrivateBorrower) { handlePrivateRepay(); return; }
     writeContract({
       address: CONTRACT_ADDRESS,
       abi: CONTRACT_ABI,
       functionName: "repay",
       args: [BigInt(loanId)],
     });
+  }
+
+  async function handlePrivateRepay() {
+    if (!address || !onChainLoan) return;
+    const burnerIndex = getBurnerIndexByAddress(address, onChainLoan.borrower);
+    if (burnerIndex === null) return;
+    setPrivateActionError(null);
+    try {
+      const interest = await publicClient.readContract({
+        address: CONTRACT_ADDRESS,
+        abi: CONTRACT_ABI,
+        functionName: "getAccruedInterest",
+        args: [BigInt(loanId)],
+      }) as bigint;
+      const repayAmount = onChainLoan.principal + interest;
+
+      setPrivateRepayStep("approving");
+      const { txHash: approveTx } = await burnerSend(
+        burnerIndex,
+        encodeBurnerCall({
+          address: onChainLoan.borrowAsset,
+          abi: ERC20_ABI,
+          functionName: "approve",
+          args: [CONTRACT_ADDRESS, repayAmount],
+        })
+      );
+      await waitForBurnerTx(approveTx);
+
+      setPrivateRepayStep("repaying");
+      const { txHash: repayTx } = await burnerSend(
+        burnerIndex,
+        encodeBurnerCall({
+          address: CONTRACT_ADDRESS,
+          abi: CONTRACT_ABI,
+          functionName: "repay",
+          args: [BigInt(loanId)],
+        })
+      );
+      await waitForBurnerTx(repayTx);
+      setPrivateRepayStep("done");
+    } catch (err) {
+      setPrivateActionError(err instanceof Error ? err.message : "Repay failed");
+      setPrivateRepayStep("idle");
+    }
+  }
+
+  async function handlePublicRedeem() {
+    const tokenId = await publicClient.readContract({
+      address: CONTRACT_ADDRESS,
+      abi: CONTRACT_ABI,
+      functionName: "loanToNft",
+      args: [BigInt(loanId)],
+    }) as bigint;
+    writeRedeem({
+      address: CONTRACT_ADDRESS,
+      abi: CONTRACT_ABI,
+      functionName: "redeem",
+      args: [tokenId],
+    });
+  }
+
+  async function handlePrivateRedeem() {
+    if (!address || !onChainLoan) return;
+    const burnerIndex = getBurnerIndexByAddress(address, onChainLoan.lender);
+    if (burnerIndex === null) return;
+    setPrivateActionError(null);
+    setPrivateRedeemStep("redeeming");
+    try {
+      const tokenId = await publicClient.readContract({
+        address: CONTRACT_ADDRESS,
+        abi: CONTRACT_ABI,
+        functionName: "loanToNft",
+        args: [BigInt(loanId)],
+      }) as bigint;
+      const { txHash } = await burnerSend(
+        burnerIndex,
+        encodeBurnerCall({
+          address: CONTRACT_ADDRESS,
+          abi: CONTRACT_ABI,
+          functionName: "redeem",
+          args: [tokenId],
+        })
+      );
+      await waitForBurnerTx(txHash);
+      setPrivateRedeemStep("done");
+    } catch (err) {
+      setPrivateActionError(err instanceof Error ? err.message : "Redeem failed");
+      setPrivateRedeemStep("idle");
+    }
   }
 
   // Close on Escape
@@ -352,21 +470,51 @@ export function LoanDetailModal({ loanId, onClose }: Props) {
 
             {/* Actions */}
             <section className="flex flex-col gap-2">
+              {privateActionError && (
+                <div className="text-terminal-red text-xs border border-terminal-red px-2 py-1.5">
+                  {privateActionError}
+                </div>
+              )}
+
+              {/* Repay — borrower */}
               {isBorrower && isActive && (
                 <div>
-                  {isRepaySuccess ? (
+                  {(isRepaySuccess || privateRepayStep === "done") ? (
                     <div className="text-terminal-green text-xs text-center py-2">✓ Loan repaid</div>
                   ) : (
                     <button
                       onClick={handleRepay}
-                      disabled={isRepayPending || isRepayLoading}
+                      disabled={isRepayPending || isRepayLoading || privateRepayStep !== "idle"}
                       className="w-full py-2 bg-terminal-green text-black text-xs font-bold tracking-wider hover:bg-green-400 disabled:opacity-50 transition-colors"
                     >
-                      {isRepayPending || isRepayLoading
+                      {(isRepayPending || isRepayLoading)
                         ? "Repaying..."
+                        : privateRepayStep === "approving"
+                        ? "Approving... (1/2)"
+                        : privateRepayStep === "repaying"
+                        ? "Repaying... (2/2)"
                         : totalDue !== undefined
                         ? `Repay ${formatTokenAmount(totalDue.toString(), dec)} ${borrowAssetInfo?.symbol ?? ""}`
                         : "Repay Loan"}
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* Redeem — lender */}
+              {isLender && isClosed && (
+                <div>
+                  {(isRedeemSuccess || privateRedeemStep === "done") ? (
+                    <div className="text-terminal-green text-xs text-center py-2">✓ Redeemed</div>
+                  ) : (
+                    <button
+                      onClick={isPrivateLender ? handlePrivateRedeem : handlePublicRedeem}
+                      disabled={isRedeemPending || isRedeemLoading || privateRedeemStep !== "idle"}
+                      className="w-full py-2 bg-terminal-green text-black text-xs font-bold tracking-wider hover:bg-green-400 disabled:opacity-50 transition-colors"
+                    >
+                      {(isRedeemPending || isRedeemLoading || privateRedeemStep === "redeeming")
+                        ? "Redeeming..."
+                        : "Redeem Position"}
                     </button>
                   )}
                 </div>

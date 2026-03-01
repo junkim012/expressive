@@ -7,9 +7,13 @@ import {
   useWriteContract,
   useWaitForTransactionReceipt,
 } from "wagmi";
+import { useUnlink } from "@unlink-xyz/react";
 import { useAssets } from "@/hooks/useAssets";
 import { CONTRACT_ADDRESS, CONTRACT_ABI, ERC20_ABI, MAX_UINT256 } from "@/lib/contract";
-import { parsePctToBps, parseLtvToBps, parseDurationToSeconds, parseTokenAmount } from "@/lib/format";
+import { parsePctToBps, parseLtvToBps, parseDurationToSeconds, parseTokenAmount, formatTokenAmount } from "@/lib/format";
+import { encodeBurnerCall, waitForBurnerTx } from "@/lib/burnerClient";
+import { getNextBurnerIndex, addBurnerForWallet } from "@/lib/burnerStorage";
+import { useWalletMode } from "@/lib/walletMode";
 
 interface FormState {
   borrowAsset: string;
@@ -70,9 +74,21 @@ function Input({
 export function LendOrderForm() {
   const { address, isConnected } = useAccount();
   const { data: assets } = useAssets();
+  const {
+    walletExists,
+    balances,
+    createBurner,
+    burnerFund,
+    burnerSend,
+    waitForConfirmation,
+  } = useUnlink();
+  const { mode } = useWalletMode();
   const [form, setForm] = useState<FormState>(EMPTY);
   const [error, setError] = useState<string | null>(null);
-  const [step, setStep] = useState<"idle" | "approving" | "placing" | "done">("idle");
+  const [step, setStep] = useState<
+    "idle" | "approving" | "placing" | "done" |
+    "private:deriving" | "private:funding" | "private:approving" | "private:placing"
+  >("idle");
 
   // Keep a ref so useEffect closures always see the latest step without needing
   // it in the dependency array (which would re-run the effect on every step change).
@@ -158,7 +174,94 @@ export function LendOrderForm() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isTxSuccess, txHash]);
 
+  async function handlePrivateSubmit() {
+    setError(null);
+    if (!address) return setError("Connect wallet first");
+    if (!walletExists) return setError("Set up your Unlink wallet first");
+    if (!form.borrowAsset) return setError("Select borrow asset");
+    if (form.acceptableCollateral.length === 0) return setError("Select at least one collateral");
+    if (!form.amount || parseFloat(form.amount) <= 0) return setError("Enter amount");
+    if (!form.minRate || parseFloat(form.minRate) <= 0) return setError("Enter min rate");
+    if (!form.maxLtv || parseFloat(form.maxLtv) <= 0) return setError("Enter max LTV");
+    if (!form.maxLltv || parseFloat(form.maxLltv) <= 0) return setError("Enter max LLTV");
+    if (!form.durationValue || parseFloat(form.durationValue) <= 0) return setError("Enter duration");
+
+    const dec = selectedAsset?.decimals ?? 6;
+    const amountRaw = parseTokenAmount(form.amount, dec);
+    const shieldedBalance = balances[form.borrowAsset] ?? 0n;
+    if (shieldedBalance < amountRaw) {
+      return setError(
+        `Insufficient Unlink shielded balance (${formatTokenAmount(shieldedBalance.toString(), dec)} ${selectedAsset?.symbol ?? ""}). Deposit more via Unlink.`
+      );
+    }
+
+    try {
+      // Step 1: derive burner
+      setStep("private:deriving");
+      const burnerIndex = getNextBurnerIndex(address);
+      const burner = await createBurner(burnerIndex);
+
+      // Step 2: fund burner from shielded pool
+      // TODO (Q1): burner also needs native MON for gas — currently unresolved.
+      setStep("private:funding");
+      const fundResult = await burnerFund(burnerIndex, {
+        token: form.borrowAsset,
+        amount: amountRaw,
+      });
+      await waitForConfirmation(fundResult.relayId);
+
+      // Step 3: approve
+      setStep("private:approving");
+      const approveCall = encodeBurnerCall({
+        address: form.borrowAsset as `0x${string}`,
+        abi: ERC20_ABI,
+        functionName: "approve",
+        args: [CONTRACT_ADDRESS, amountRaw],
+      });
+      const { txHash: approveTxHash } = await burnerSend(burnerIndex, approveCall);
+      await waitForBurnerTx(approveTxHash);
+
+      // Step 4: place lend order
+      setStep("private:placing");
+      const minRate = BigInt(parsePctToBps(form.minRate));
+      const maxLtv = BigInt(parseLtvToBps(form.maxLtv));
+      const maxLltv = BigInt(parseLtvToBps(form.maxLltv));
+      const maxDuration = BigInt(parseDurationToSeconds(form.durationValue, form.durationUnit));
+
+      const placeCall = encodeBurnerCall({
+        address: CONTRACT_ADDRESS,
+        abi: CONTRACT_ABI,
+        functionName: "placeLendOrder",
+        args: [
+          form.borrowAsset as `0x${string}`,
+          form.acceptableCollateral as `0x${string}`[],
+          minRate,
+          maxLtv,
+          maxDuration,
+          maxLltv,
+          amountRaw,
+        ],
+      });
+      const { txHash: placeTxHash } = await burnerSend(burnerIndex, placeCall);
+      await waitForBurnerTx(placeTxHash);
+
+      // Persist burner mapping
+      addBurnerForWallet(address, {
+        burnerIndex,
+        burnerAddress: burner.address,
+        orderType: "lend",
+      });
+
+      setStep("done");
+      setTimeout(() => { setForm(EMPTY); setStep("idle"); }, 3000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Private order failed");
+      setStep("idle");
+    }
+  }
+
   function handleSubmit() {
+    if (mode === "private") { handlePrivateSubmit(); return; }
     setError(null);
     if (!address) return setError("Connect wallet first");
     if (!form.borrowAsset) return setError("Select borrow asset");
@@ -174,12 +277,7 @@ export function LendOrderForm() {
     const currentAllowance = (allowance as bigint | undefined) ?? 0n;
 
     if (currentAllowance < amountRaw) {
-      // Need approval first. After the approve tx confirms, the useEffect above
-      // will automatically call placeOrder() — no second click required.
       setStep("approving");
-      console.log("address ", form.borrowAsset)
-      console.log("CONTRACT_ADDRESS: ", CONTRACT_ADDRESS)
-      console.log("MAX_UINT256: ", MAX_UINT256)
       writeContract({
         address: form.borrowAsset as `0x${string}`,
         abi: ERC20_ABI,
@@ -191,7 +289,15 @@ export function LendOrderForm() {
     }
   }
 
-  const isLoading = isWritePending || isTxLoading;
+  const isPrivateLoading = step.startsWith("private:");
+  const isLoading = isWritePending || isTxLoading || isPrivateLoading;
+
+  const PRIVATE_STEP_LABELS: Record<string, string> = {
+    "private:deriving": "1/4 — Deriving burner account...",
+    "private:funding":  "2/4 — Funding from shielded pool...",
+    "private:approving":"3/4 — Approving token spend...",
+    "private:placing":  "4/4 — Placing lend order...",
+  };
 
   if (step === "done") {
     return (
@@ -249,7 +355,17 @@ export function LendOrderForm() {
         </div>
       </FieldRow>
 
-      <FieldRow label="Amount" hint={balanceDisplay}>
+      <FieldRow
+        label="Amount"
+        hint={
+          mode === "private" && form.borrowAsset && selectedAsset
+            ? `Shielded: ${formatTokenAmount(
+                (balances[form.borrowAsset] ?? 0n).toString(),
+                selectedAsset.decimals
+              )} ${selectedAsset.symbol}`
+            : balanceDisplay
+        }
+      >
         <Input
           type="number"
           value={form.amount}
@@ -337,23 +453,32 @@ export function LendOrderForm() {
           Step 2/2 — Placing lend order...
         </div>
       )}
+      {isPrivateLoading && (
+        <div className="text-terminal-green text-xs">
+          {PRIVATE_STEP_LABELS[step] ?? "Processing..."}
+        </div>
+      )}
 
-      {isConnected ? (
+      {!isConnected && mode === "public" ? (
+        <div className="w-full py-2 border border-terminal-border text-terminal-muted text-xs text-center mt-1">
+          Connect wallet to place orders
+        </div>
+      ) : (
         <button
           onClick={handleSubmit}
           disabled={isLoading}
           className="w-full py-2 bg-terminal-green text-black text-xs font-bold tracking-wider hover:bg-green-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors mt-1"
         >
           {isLoading
-            ? step === "approving"
+            ? isPrivateLoading
+              ? PRIVATE_STEP_LABELS[step] ?? "Processing..."
+              : step === "approving"
               ? "Approving... (1/2)"
               : "Placing... (2/2)"
+            : mode === "private"
+            ? "Place Lend Order (Private)"
             : "Place Lend Order"}
         </button>
-      ) : (
-        <div className="w-full py-2 border border-terminal-border text-terminal-muted text-xs text-center mt-1">
-          Connect wallet to place orders
-        </div>
       )}
     </div>
   );

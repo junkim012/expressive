@@ -4,6 +4,21 @@
 
 Allow lenders and borrowers to place orders on Expressive Lending without revealing their real wallet identity. The lending strategy (rates, LTV, duration, collateral composition, amounts) is visible on-chain but cannot be linked to the user's primary wallet.
 
+## UX Flow
+
+you always have a connected public key. The distinction is only about how orders are submitted:
+
+Always: Connect public wallet (Rabby)                     
+                  │
+       ┌──────────┴──────────┐
+    Public Mode           Private Mode
+       │                      │
+    Orders go directly     First: deposit from
+    from public wallet     public wallet → shielded pool
+                                │
+                           Orders go via burner
+                           (derived from shielded wallet)
+
 ---
 
 ## Privacy Model
@@ -251,12 +266,55 @@ When toggled on:
 4. On submit: derive burner → fund → approve → place (sequentially, with step progress UI)
 5. Display burner address as order owner (truncated, with tooltip explaining private mode)
 
-### Order management panel — Private orders
+### Private Positions Panel
 
-- Read burner-to-order mappings from `localStorage`
-- For each private order/loan, query backend using burner address as `owner`
-- Show "Repay" / "Redeem" buttons that trigger burner transactions
-- Show "Sweep" button after final action to return assets to shielded pool
+A dedicated panel separate from the existing `MyPositions` component. It is only visible when the user has an Unlink wallet loaded.
+
+**Data source**
+- Read all `{ burnerAddress, burnerIndex, orderId, type }` entries from `localStorage`
+- For each burner, query the backend:
+  - `GET /api/v1/orders?owner=<burnerAddress>`
+  - `GET /api/v1/loans?lender=<burnerAddress>` (lend side)
+  - `GET /api/v1/loans?borrower=<burnerAddress>` (borrow side)
+- Recovery path (new device): re-derive burners from mnemonic at indices 0, 1, 2... until N consecutive addresses return no results (gap limit, e.g. N=5)
+
+**Layout**
+```
+┌─────────────────────────────────────────┐
+│  PRIVATE POSITIONS          [🔒 Unlink] │
+├─────────────────────────────────────────┤
+│  LEND  (2 orders · 1 loan)              │
+│  ── Orders ──────────────────────────── │
+│  #42  1000 USDC  ██░░░░  4.5%  OPEN     │
+│  #43   500 USDC  ░░░░░░  5.0%  OPEN     │
+│  ── Loans ───────────────────────────── │
+│  #7   950 USDC   5.0%   14d   ACTIVE  ▶ │
+├─────────────────────────────────────────┤
+│  BORROW  (1 order · 0 loans)            │
+│  ── Orders ──────────────────────────── │
+│  #44  2000 USDC  ░░░░░░  8.0%  OPEN     │
+└─────────────────────────────────────────┘
+```
+
+**Per-row actions (via burner client, not wagmi)**
+
+| Row type | Available actions |
+|---|---|
+| Open lend order | — (no cancellation supported) |
+| Open borrow order | — (no cancellation supported) |
+| Active lender loan | Redeem (enabled once Repaid/Liquidated) |
+| Active borrower loan | Repay → triggers approve + repay from burner |
+| Repaid/Liquidated lender loan | Redeem → `loanToNft` lookup + `redeem(tokenId)` from burner |
+| Any closed loan | Sweep → returns burner assets to shielded pool |
+
+**Toggle entry point**
+
+The "Place order privately" toggle appears at the bottom of both `LendOrderForm` and `BorrowOrderForm`. When enabled:
+1. Check Unlink wallet exists → prompt creation/backup if not
+2. Show shielded balance for the relevant token
+3. If shielded balance < order amount → show deposit flow
+4. On submit: derive burner → fund → approve → place (step progress: 1/3, 2/3, 3/3)
+5. On success: write mapping to `localStorage`, refresh Private Positions panel
 
 ---
 
@@ -290,23 +348,93 @@ These must be resolved before or during implementation.
 **Q1 — Gas (MON) for burners**
 Does `useBurner().fund()` support funding native MON, or only ERC20 tokens? Burners need MON for gas on every transaction (approve, place, repay, redeem, sweep). If native funding isn't supported, a separate gas provisioning mechanism is needed.
 
-**Q2 — Private positions in `useMyPositions`**
-The existing hook fetches positions by connected wallet address. Burner-owned orders and loans won't appear there. Decide: do private positions merge into the main positions panel (requires extending the hook to also query all known burner addresses from localStorage), or do they live in a separate "Private Positions" panel?
+**Q2 — ~~Private positions in `useMyPositions`~~ — RESOLVED**
+Private positions live in a dedicated **"Private Positions" panel**, separate from the existing `MyPositions` component. A "Place order privately" toggle on the order form is the entry point. See [Private Positions Panel](#private-positions-panel) in Frontend Integration Points.
 
-**Q3 — `isBorrower` / `isLender` checks in existing UI**
-`LoanDetailModal` gates the Repay button with `address === onChainLoan.borrower`. For private loans, the borrower is the burner, not the connected wallet, so the button never renders. The UI needs a way to recognise that the current user controls a given burner address before showing action buttons.
+**Q3 — ~~`isBorrower` / `isLender` checks in existing UI~~ — RESOLVED**
+The frontend already has a localStorage mapping of the connected wallet → its burner addresses. Scope it by connected wallet address (`unlink_burners_<connectedWallet>`) and widen the ownership check to include burners:
 
-**Q4 — Borrower post-loan UX**
-When a borrow order fills, the principal is sent to the burner (`borrowOrder.owner`). The borrower needs those funds in their real wallet to actually use them. Open questions:
-- Does the borrower sweep principal out to their real wallet immediately after matching?
-- At repayment time, do they re-fund the burner (sweep back in from the shielded pool)?
-- What is the step-by-step UI flow for this?
+```ts
+// localStorage key: `unlink_burners_0xRealWallet` → string[] of burner addresses
+const knownBurners = getBurnersForWallet(address) // reads localStorage
+const isPrivateLoan = knownBurners.includes(onChainLoan.borrower)
 
-**Q5 — Lender `redeem` button**
-The current app has no redeem functionality for lenders anywhere (private or otherwise). This feature needs to be designed and added to `LoanDetailModal` or `MyPositions` as part of this work. For private lenders it must use the burner client; for regular lenders it can use wagmi's `useWriteContract`.
+const isBorrower = address === onChainLoan.borrower || isPrivateLoan
+const isLender   = address === onChainLoan.lender   || knownBurners.includes(onChainLoan.lender)
+```
 
-**Q6 — Multi-collateral funding for borrow orders**
-Borrow orders accept multiple collateral assets. The spec's `fund()` call shows a single token. The burner needs a separate `fund()` call per collateral asset — confirm the SDK supports this and document the loop.
+When `isPrivateLoan` is true, the action (repay/redeem) must use the **burner client** derived for that address, not wagmi's `useWriteContract`. The modal needs to branch on this:
+- `isPrivateLoan === false` → use wagmi as today
+- `isPrivateLoan === true` → derive burner client from localStorage index, run approve + repay/redeem through it
+
+**Q4 — ~~Borrower post-loan UX~~ — RESOLVED**
+All fund movement between the burner and the real wallet goes **via the Unlink shielded pool** (Option B). Direct burner → real wallet transfers are not used — they create an on-chain link that breaks the privacy model.
+
+**Post-match (borrower receives principal):**
+1. Loan executes → principal lands in burner EOA
+2. Private Positions panel shows the burner's token balance with a "Sweep to Pool" button
+3. User clicks Sweep → burner sends funds to Unlink shielded pool via `sweep()`
+4. User withdraws from the Unlink pool to their real wallet (standard Unlink withdraw UI)
+
+**Repayment (borrower returns principal + interest):**
+1. User deposits repayment amount into the Unlink shielded pool
+2. User funds the burner from the pool via `fund()`
+3. Burner runs: approve → `repay(loanId)`
+4. Collateral is returned to the burner by the contract
+5. Burner sweeps returned collateral back to the Unlink pool
+6. User withdraws collateral from pool to real wallet
+
+**UI: burner balance display**
+The Private Positions panel reads the burner's ERC20 balance via `publicClient.readContract({ functionName: 'balanceOf', args: [burnerAddress] })` for each known burner address. Balances are shown inline on each position row. A "Sweep to Pool" button appears whenever the burner holds a non-zero balance.
+
+**Q5 — ~~Lender `redeem` button~~ — RESOLVED**
+The lender burner lifecycle is simpler than the borrower's — it is funded exactly once and never needs re-funding:
+
+1. Burner is funded → places lend order (borrowAsset locked in contract)
+2. Batch executes → loan created, NFT minted to burner
+3. Borrower repays → `principal + interest` sits in contract earmarked for NFT holder
+4. Burner calls `redeem(tokenId)` → NFT burned, contract sends `principal + interest` to burner
+5. "Sweep to Pool" button → burner sends funds to Unlink shielded pool
+6. User withdraws from pool to real wallet
+
+**UI changes required (both private and non-private):**
+
+`LoanDetailModal` — add a Redeem button for lenders alongside the existing Repay button for borrowers:
+- Show when: `isLender && (loan.status === 'repaid' || loan.status === 'liquidated')`
+- Non-private lender: use wagmi `useWriteContract` → `loanToNft(loanId)` then `redeem(tokenId)`
+- Private lender: use burner client → same two-step lookup + redeem, then show Sweep button
+
+Private Positions panel — Redeem and Sweep buttons on lender loan rows:
+- "Redeem" enabled once loan status is `repaid` or `liquidated` → burner client calls `loanToNft` + `redeem`
+- "Sweep to Pool" appears after redemption (burner balance > 0) → `sweep()` back to shielded pool
+
+**Q6 — ~~Multi-collateral funding for borrow orders~~ — RESOLVED**
+Fund the burner in a loop, one `fund()` call per collateral asset, then approve each asset before placing the order:
+
+```ts
+// Fund burner for each collateral asset
+for (const { token, amount } of collaterals) {
+  await fund({ burner: burner.address, token, amount })
+}
+
+// Approve each collateral asset to the contract
+for (const { token, amount } of collaterals) {
+  await burnerClient.writeContract({
+    address: token,
+    abi: erc20Abi,
+    functionName: 'approve',
+    args: [CONTRACT_ADDRESS, amount],
+  })
+}
+
+// Place the borrow order
+await burnerClient.writeContract({
+  address: CONTRACT_ADDRESS,
+  abi: expressiveLendingAbi,
+  functionName: 'placeBorrowOrder',
+  args: [borrowAsset, collaterals.map(c => c.token), collaterals.map(c => c.amount), maxRate, minLTV, minDuration, minLLTV, amount, fillOrKill],
+})
+```
 
 ---
 

@@ -2,11 +2,40 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useAccount, useConnect, useDisconnect, useBalance } from "wagmi";
-import { injected, coinbaseWallet } from "wagmi/connectors";
+import { useAccount, useConnect, useDisconnect } from "wagmi";
 import { useState } from "react";
 import { truncateAddress } from "@/lib/format";
 import { BatchStatusBadge } from "./BatchStatusBadge";
+import { useWalletMode } from "@/lib/walletMode";
+
+function ModeToggle() {
+  const { mode, setMode } = useWalletMode();
+
+  return (
+    <div className="flex items-center border border-terminal-border text-[10px]">
+      <button
+        onClick={() => setMode("public")}
+        className={`px-2 py-1 transition-colors ${
+          mode === "public"
+            ? "bg-terminal-green text-black font-bold"
+            : "text-terminal-muted hover:text-terminal-text"
+        }`}
+      >
+        PUBLIC
+      </button>
+      <button
+        onClick={() => setMode("private")}
+        className={`px-2 py-1 transition-colors border-l border-terminal-border ${
+          mode === "private"
+            ? "bg-terminal-amber text-black font-bold"
+            : "text-terminal-muted hover:text-terminal-text"
+        }`}
+      >
+        PRIVATE
+      </button>
+    </div>
+  );
+}
 
 function WalletButton() {
   const { address, isConnected } = useAccount();
@@ -31,19 +60,13 @@ function WalletButton() {
               {truncateAddress(address, 6)}
             </div>
             <button
-              onClick={() => {
-                navigator.clipboard.writeText(address);
-                setShowMenu(false);
-              }}
+              onClick={() => { navigator.clipboard.writeText(address); setShowMenu(false); }}
               className="w-full text-left px-3 py-2 text-xs hover:bg-terminal-border transition-colors"
             >
               Copy Address
             </button>
             <button
-              onClick={() => {
-                disconnect();
-                setShowMenu(false);
-              }}
+              onClick={() => { disconnect(); setShowMenu(false); }}
               className="w-full text-left px-3 py-2 text-xs text-terminal-red hover:bg-terminal-border transition-colors"
             >
               Disconnect
@@ -68,10 +91,7 @@ function WalletButton() {
           {connectors.map((connector) => (
             <button
               key={connector.id}
-              onClick={() => {
-                connect({ connector });
-                setShowConnectors(false);
-              }}
+              onClick={() => { connect({ connector }); setShowConnectors(false); }}
               className="w-full text-left px-3 py-2 text-xs hover:bg-terminal-border transition-colors flex items-center gap-2"
             >
               <span className="w-1 h-1 rounded-full bg-terminal-muted" />
@@ -122,8 +142,11 @@ export function Header() {
         <BatchStatusBadge />
       </div>
 
-      {/* Right: wallet */}
-      <WalletButton />
+      {/* Right: mode toggle + wallet */}
+      <div className="flex items-center gap-2">
+        <ModeToggle />
+        <WalletButton />
+      </div>
     </header>
   );
 }

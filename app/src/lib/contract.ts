@@ -212,6 +212,20 @@ export const CONTRACT_ABI = [
     inputs: [{ name: "loanId", type: "uint256" }],
     outputs: [],
   },
+  {
+    type: "function",
+    name: "redeem",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "tokenId", type: "uint256" }],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "loanToNft",
+    stateMutability: "view",
+    inputs: [{ name: "loanId", type: "uint256" }],
+    outputs: [{ type: "uint256" }],
+  },
   // ── Events ────────────────────────────────────────────────────────────────
   {
     type: "event",
