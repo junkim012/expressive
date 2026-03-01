@@ -73,7 +73,7 @@ async function main() {
     } else {
       await checkBalances(LENDER_LABELS[i], lender.publicClient, addr, lenderConfig.tokens, lenderConfig.minGas);
     }
-    await approveMax(LENDER_LABELS[i], lender.walletClients[i], lenderConfig.tokens.usdc, lenderConfig.contractAddress, 'USDC');
+    await approveMax(LENDER_LABELS[i], lender.walletClients[i], lender.publicClient, lenderConfig.tokens.usdc, lenderConfig.contractAddress, 'USDC');
   }
 
   // ── Setup borrowers ───────────────────────────────────────────────────────
@@ -84,8 +84,8 @@ async function main() {
     } else {
       await checkBalances(BORROWER_LABELS[i], borrower.publicClient, addr, borrowerConfig.tokens, borrowerConfig.minGas);
     }
-    await approveMax(BORROWER_LABELS[i], borrower.walletClients[i], borrowerConfig.tokens.wbtc, borrowerConfig.contractAddress, 'WBTC');
-    await approveMax(BORROWER_LABELS[i], borrower.walletClients[i], borrowerConfig.tokens.weth, borrowerConfig.contractAddress, 'WETH');
+    await approveMax(BORROWER_LABELS[i], borrower.walletClients[i], borrower.publicClient, borrowerConfig.tokens.wbtc, borrowerConfig.contractAddress, 'WBTC');
+    await approveMax(BORROWER_LABELS[i], borrower.walletClients[i], borrower.publicClient, borrowerConfig.tokens.weth, borrowerConfig.contractAddress, 'WETH');
   }
 
   console.log('');

@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install anvil deploy backend frontend dev staging action solver lender borrower bots solver-logs bot-logs logs test-contracts
+.PHONY: help install anvil deploy backend frontend dev staging fund-staging action solver lender borrower bots solver-logs bot-logs logs test-contracts
 
 REPO_ROOT := $(shell pwd)
 
@@ -20,6 +20,7 @@ help:
 	@echo "  One-command spinup"
 	@echo "    make dev           Run the full local stack (background, logs to /tmp/*.log)"
 	@echo "    make staging       Start backend + frontend against Monad testnet (no Anvil)"
+	@echo "    make fund-staging  Mint mock tokens to staging addresses (ADDRS=\"0x... 0x...\")"
 	@echo "    make logs          Tail all service logs with color-coded prefixes"
 	@echo "    make solver-logs   Tail solver bot logs with color-coded prefixes"
 	@echo "    make bot-logs      Tail all bot logs (solver + lender + borrower)"
@@ -59,6 +60,9 @@ dev:
 # ── Monad testnet staging ─────────────────────────────────────────────────────
 staging: ## Start backend + frontend pointing to Monad testnet (no Anvil, no deploy)
 	@bash e2e/staging/staging.sh
+
+fund-staging: ## Mint mock tokens to staging addresses
+	@bash e2e/staging/fund-staging.sh $(ADDRS)
 
 # ── Observability ─────────────────────────────────────────────────────────────
 logs:

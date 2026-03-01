@@ -140,6 +140,8 @@ function PrivateRepayButton({
         args: [BigInt(loan.loanId)],
       }) as bigint;
       const repayAmount = BigInt(loan.principal) + interest;
+      // Add 1% buffer for interest accruing between approve and repay txs
+      const repayWithBuffer = repayAmount + repayAmount / 100n;
 
       const borrowAssetInfo = assets?.borrowAssets.find(
         (a) => a.address.toLowerCase() === loan.borrowAsset.toLowerCase()
@@ -149,7 +151,7 @@ function PrivateRepayButton({
       await ensureAsset(deps, burnerIndex, burnerAddress, NATIVE_TOKEN, GAS_RESERVE, "MON");
 
       setStep("funding");
-      await ensureAsset(deps, burnerIndex, burnerAddress, loan.borrowAsset, repayAmount, borrowAssetInfo?.symbol ?? "");
+      await ensureAsset(deps, burnerIndex, burnerAddress, loan.borrowAsset, repayWithBuffer, borrowAssetInfo?.symbol ?? "");
 
       setStep("approving");
       const { txHash: approveTx } = await burnerSend(
@@ -158,7 +160,7 @@ function PrivateRepayButton({
           address: loan.borrowAsset as `0x${string}`,
           abi: ERC20_ABI,
           functionName: "approve",
-          args: [CONTRACT_ADDRESS, repayAmount],
+          args: [CONTRACT_ADDRESS, repayWithBuffer],
         })
       );
       await waitForBurnerTx(approveTx);

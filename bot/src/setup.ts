@@ -1,4 +1,4 @@
-import type { PublicClient, Transport, Chain } from 'viem';
+import type { PublicClient, Transport, Chain, Hash } from 'viem';
 import type { BotWalletClient } from './chain';
 import type { TokenAddresses } from './config';
 import { ERC20_ABI } from './abi';
@@ -6,6 +6,13 @@ import { log, warn } from './logger';
 import { privateKeyToAccount } from 'viem/accounts';
 import { createWalletClient, http } from 'viem';
 import { foundry } from 'viem/chains';
+
+async function waitForTx(
+  publicClient: PublicClient<Transport, Chain>,
+  hash: Hash,
+): Promise<void> {
+  await publicClient.waitForTransactionReceipt({ hash });
+}
 
 const MAX_UINT256 = 2n ** 256n - 1n;
 
@@ -21,6 +28,7 @@ const MIN_GAS_DEFAULT = 5_000_000_000_000_000_000n; // 5 MON
 export async function approveMax(
   label: string,
   walletClient: BotWalletClient,
+  publicClient: PublicClient<Transport, Chain>,
   tokenAddress: `0x${string}`,
   spenderAddress: `0x${string}`,
   tokenName: string,
@@ -31,6 +39,7 @@ export async function approveMax(
     functionName: 'approve',
     args: [spenderAddress, MAX_UINT256],
   });
+  await waitForTx(publicClient, hash);
   log(label, `Approved ${tokenName} (${hash.slice(0, 10)}...)`);
 }
 

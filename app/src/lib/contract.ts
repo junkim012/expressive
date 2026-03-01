@@ -398,5 +398,5 @@ export const MAX_UINT256 = 2n ** 256n - 1n;
 // Unlink convention for native token (MON on Monad testnet)
 export const NATIVE_TOKEN = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" as `0x${string}`;
 
-// Minimum native MON sent to a burner wallet to cover gas for ~3 contract calls
-export const GAS_RESERVE = 10_000_000_000_000_000n; // 0.01 MON
+// Minimum native MON sent to a burner wallet to cover gas for approve + place txs
+export const GAS_RESERVE = 1_000_000_000_000_000_000n; // 1 MON

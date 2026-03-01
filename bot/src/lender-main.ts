@@ -34,7 +34,7 @@ async function main() {
     }
 
     // Approve USDC for lending
-    await approveMax(LABELS[i], walletClients[i], config.tokens.usdc, config.contractAddress, 'USDC');
+    await approveMax(LABELS[i], walletClients[i], publicClient, config.tokens.usdc, config.contractAddress, 'USDC');
   }
   console.log('');
 

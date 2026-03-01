@@ -34,8 +34,8 @@ async function main() {
     }
 
     // Approve WBTC + WETH for collateral
-    await approveMax(LABELS[i], walletClients[i], config.tokens.wbtc, config.contractAddress, 'WBTC');
-    await approveMax(LABELS[i], walletClients[i], config.tokens.weth, config.contractAddress, 'WETH');
+    await approveMax(LABELS[i], walletClients[i], publicClient, config.tokens.wbtc, config.contractAddress, 'WBTC');
+    await approveMax(LABELS[i], walletClients[i], publicClient, config.tokens.weth, config.contractAddress, 'WETH');
   }
   console.log('');
 
