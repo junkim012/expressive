@@ -111,7 +111,7 @@ NEXT_PUBLIC_CHAIN_ID=31337
 NEXT_PUBLIC_RPC_URL=http://localhost:8545
 EOF
 
-(cd "$REPO_ROOT/app" && npm run dev) >"$FRONTEND_LOG" 2>&1 &
+(cd "$REPO_ROOT/app" && unset PORT && npm run dev) >"$FRONTEND_LOG" 2>&1 &
 PIDS+=($!)
 ok "Frontend starting  (log: $FRONTEND_LOG)"
 
