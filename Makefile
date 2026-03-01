@@ -1,0 +1,51 @@
+.DEFAULT_GOAL := help
+.PHONY: help install anvil deploy backend frontend dev test-contracts
+
+REPO_ROOT := $(shell pwd)
+
+# ── Help ──────────────────────────────────────────────────────────────────────
+help:
+	@echo ""
+	@echo "Expressive Lending — local development"
+	@echo ""
+	@echo "  Setup"
+	@echo "    make install       Install npm deps for backend and app"
+	@echo ""
+	@echo "  Individual services  (each runs in the foreground — open a new terminal per step)"
+	@echo "    make anvil         Start Anvil local chain on :8545"
+	@echo "    make deploy        Deploy contracts + write e2e/.env.local"
+	@echo "    make backend       Start indexer + API on :3001"
+	@echo "    make frontend      Start Next.js dev server on :3000"
+	@echo ""
+	@echo "  One-command spinup"
+	@echo "    make dev           Run the full local stack (background, logs to /tmp/*.log)"
+	@echo ""
+	@echo "  Contracts"
+	@echo "    make test          Run Foundry test suite"
+	@echo ""
+
+# ── Setup ─────────────────────────────────────────────────────────────────────
+install:
+	cd backend && npm install
+	cd app && npm install
+
+# ── Individual services ───────────────────────────────────────────────────────
+anvil:
+	@bash e2e/01_start_anvil.sh
+
+deploy:
+	@bash e2e/02_deploy.sh
+
+backend:
+	@bash e2e/03_start_backend.sh
+
+frontend:
+	@bash e2e/04_start_frontend.sh
+
+# ── Full local stack ──────────────────────────────────────────────────────────
+dev:
+	@bash e2e/dev.sh
+
+# ── Contracts ─────────────────────────────────────────────────────────────────
+test:
+	cd contracts && forge test -vv

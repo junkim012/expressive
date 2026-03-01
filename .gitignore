@@ -14,3 +14,4 @@ contracts/docs/
 # Dotenv
 contracts/.env
 .env
+.env.local

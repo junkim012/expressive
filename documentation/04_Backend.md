@@ -51,7 +51,6 @@ The event poller and HTTP server run in the same process. The poller updates SQL
 | `RPC_URL` | Yes | Monad RPC endpoint (HTTP, not WebSocket) |
 | `CONTRACT_ADDRESS` | Yes | Deployed lending contract address |
 | `START_BLOCK` | Yes | Contract deployment block number (index from here) |
-| `SOLVER_FEE_RATE` | Yes | `solverFeeRate` in basis points — must match the deployed contract. Used to reverse-compute `matchAmount` from `LoanCreated.principal`. |
 | `PORT` | No | HTTP/WS listen port (default `3001`) |
 | `POLL_INTERVAL_MS` | No | Event polling interval in ms (default `2000`) |
 | `LOG_CHUNK_SIZE` | No | Blocks per `eth_getLogs` call (default `500`) |
@@ -115,8 +114,10 @@ CREATE TABLE loans (
   borrow_asset    TEXT NOT NULL,
   principal       TEXT NOT NULL,          -- uint256 as string
   rate            INTEGER NOT NULL,       -- basis points
+  ltv             INTEGER NOT NULL,       -- basis points (from LoanCreated event)
+  lltv            INTEGER NOT NULL,       -- basis points (from LoanCreated event)
   maturity_date   INTEGER NOT NULL,       -- Unix timestamp
-  origination_date INTEGER NOT NULL,      -- Unix timestamp (block timestamp)
+  origination_date INTEGER NOT NULL,      -- Unix timestamp (from LoanCreated event)
   status          TEXT NOT NULL DEFAULT 'active', -- 'active'|'repaid'|'liquidated'|'defaulted'
   block_number    INTEGER NOT NULL,
   tx_hash         TEXT NOT NULL
@@ -271,7 +272,7 @@ For a hackathon/demo context (contract deployed hours or days before), initial s
 |---|---|
 | `LendOrderPlaced` | INSERT into `orders` with `order_type='lend'`, `filled_amount='0'`, `status='open'` |
 | `BorrowOrderPlaced` | INSERT into `orders` with `order_type='borrow'`, `filled_amount='0'`, `status='open'` |
-| `LoanCreated` | INSERT into `loans` (see notes below); UPDATE `orders.filled_amount` for both `lendOrderId` and `borrowOrderId` by adding `matchAmount` (see Filled Amount Tracking); if `filled_amount >= amount`, set `status='filled'` |
+| `LoanCreated` | INSERT into `loans` using fields from the event directly (see notes below); UPDATE `orders.filled_amount` for both `lendOrderId` and `borrowOrderId` by adding `event.matchAmount`; if `filled_amount >= amount`, set `status='filled'` |
 | `BatchExecuted` | INSERT into `batches`; if `solver == address(0)`, insert with `solver = null` (empty window — no submissions) |
 | `LoanRepaid` | UPDATE `loans.status='repaid'`; INSERT into `loan_events` |
 | `LoanLiquidated` | UPDATE `loans.status='liquidated'`; INSERT into `loan_events` with `liquidator` field |
@@ -297,23 +298,23 @@ If `changes() == 0`, the loan was already indexed and the filled_amount update i
 
 ### Filled Amount Tracking
 
-**Critical:** The contract updates `filledAmount` with `matchAmount` (the gross amount before the solver fee), not `principal` (the net amount after the fee). `LoanCreated` only emits `principal`. The backend must reverse-compute `matchAmount` to stay consistent with on-chain state:
+The contract updates `filledAmount` with `matchAmount` (the gross amount before the solver fee), not `principal` (the net amount after the fee). The `LoanCreated` event emits `matchAmount` directly, so the backend uses it as-is:
 
 ```
-matchAmount = mulDiv(principal, BASIS_POINTS, BASIS_POINTS - SOLVER_FEE_RATE)
-order.filled_amount += matchAmount
+order.filled_amount += event.matchAmount
 ```
 
-If the backend summed `principal` instead, the reported fill percentage would be understated by approximately `SOLVER_FEE_RATE / BASIS_POINTS` (e.g. 1% if `solverFeeRate = 100 bps`), and orders would never reach `status='filled'` even when fully consumed.
+No reverse-computation is needed.
 
 ### `LoanCreated` — derived fields
 
-`LoanCreated` does not emit `borrow_asset` or `origination_date`. The backend derives them:
+`LoanCreated` does not emit `borrow_asset`. The backend derives it:
 
 - **`borrow_asset`**: looked up from the `orders` table using `lendOrderId` (already indexed from `LendOrderPlaced`).
-- **`origination_date`**: the block timestamp of the `LoanCreated` log. This matches `block.timestamp` at execution time, which is exactly what `Loan.originationDate` is set to in the contract.
 
-`LoanCreated` also does not emit `collateralAssets` or `collateralAmounts` for the loan. The backend does **not** store per-loan collateral. The frontend's Loan Detail Modal fetches collateral directly from the contract via `getLoan(loanId)` (which returns the full `Loan` struct including `collateralAssets` and `collateralAmounts`). This is already classified as a "Direct RPC Polling" data source in the frontend spec.
+All other fields required for the `loans` row are emitted directly by the event: `matchAmount`, `principal`, `rate`, `ltv`, `lltv`, `maturityDate`, `originationDate`.
+
+`LoanCreated` does not emit `collateralAssets` or `collateralAmounts` for the loan. The backend does **not** store per-loan collateral. The frontend's Loan Detail Modal fetches collateral directly from the contract via `getLoan(loanId)` (which returns the full `Loan` struct including `collateralAssets` and `collateralAmounts`). This is already classified as a "Direct RPC Polling" data source in the frontend spec.
 
 ### Edge cases
 
@@ -389,6 +390,8 @@ Borrow orders include `collateralAssets`, `collateralAmounts`, `maxRate`, `minLt
       "borrowAsset": "0x...",
       "principal": "1000000000",
       "rate": 525,
+      "ltv": 6000,
+      "lltv": 7500,
       "maturityDate": 1731776000,
       "originationDate": 1700000000,
       "status": "active",
@@ -696,14 +699,13 @@ The API server sets `Access-Control-Allow-Origin: *` for all routes. The fronten
 
 ---
 
-## Contract vs. Frontend Spec Inconsistency (flagged)
+## Contract View Functions for Health
 
-The frontend spec (`03_Frontend.md`) references `getHealthFactor(loanId)` as a view function returning a numeric health factor. The deployed contract (`ExpressiveLending.sol`) does not have this function. The contract exposes:
+The contract exposes two health-related view functions:
 
 ```solidity
 function isHealthy(uint256 loanId) external view returns (bool)
+function getHealthFactor(uint256 loanId) external view returns (uint256)
 ```
 
-This returns a boolean (healthy or not), not a numeric ratio. The frontend's collateral health bar and health factor display will need to compute the ratio client-side from raw values returned by `getLoan(loanId)` (collateral assets and amounts) and per-asset oracle prices (`IOracle.getPrice()`), rather than calling a single `getHealthFactor` view function.
-
-This is a frontend spec bug, not a backend concern, but is flagged here because the backend spec was derived from the frontend spec.
+`getHealthFactor` returns the collateral-to-threshold ratio scaled by `BASIS_POINTS` (10 000). A value of 10 000 means the loan is exactly at the liquidation boundary; values above 10 000 are healthy; values below are undercollateralised. The frontend can call this directly to drive health bars and numeric displays without computing the ratio client-side.
