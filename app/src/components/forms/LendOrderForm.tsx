@@ -71,6 +71,9 @@ function Input({
   );
 }
 
+type BurnerIndex = 0 | 1 | 2;
+const BURNER_INDICES = [0, 1, 2] as const;
+
 export function LendOrderForm() {
   const { address, isConnected } = useAccount();
   const { data: assets } = useAssets();
@@ -85,6 +88,13 @@ export function LendOrderForm() {
   const { mode } = useWalletMode();
   const [form, setForm] = useState<FormState>(EMPTY);
   const [error, setError] = useState<string | null>(null);
+  const [selectedBurnerIdx, setSelectedBurnerIdx] = useState<BurnerIndex>(0);
+
+  useEffect(() => {
+    if (!address) return;
+    const next = Math.min(getNextBurnerIndex(address), 2) as BurnerIndex;
+    setSelectedBurnerIdx(next);
+  }, [address]);
   const [step, setStep] = useState<
     "idle" | "approving" | "placing" | "done" |
     "private:deriving" | "private:gas" | "private:funding" | "private:approving" | "private:placing"
@@ -198,7 +208,7 @@ export function LendOrderForm() {
     try {
       // Step 1: derive burner
       setStep("private:deriving");
-      const burnerIndex = getNextBurnerIndex(address);
+      const burnerIndex = selectedBurnerIdx;
       const burner = await createBurner(burnerIndex);
 
       // Step 2: fund burner with native MON for gas from shielded pool
@@ -461,6 +471,26 @@ export function LendOrderForm() {
       {isPrivateLoading && (
         <div className="text-terminal-green text-xs">
           {PRIVATE_STEP_LABELS[step] ?? "Processing..."}
+        </div>
+      )}
+
+      {mode === "private" && !isPrivateLoading && (
+        <div className="flex items-center gap-1">
+          <span className="text-[9px] text-terminal-muted uppercase tracking-wider">Burner</span>
+          {BURNER_INDICES.map((i) => (
+            <button
+              key={i}
+              type="button"
+              onClick={() => setSelectedBurnerIdx(i)}
+              className={`px-2 py-0.5 text-[10px] font-bold border transition-colors ${
+                selectedBurnerIdx === i
+                  ? "border-terminal-green bg-terminal-green text-black"
+                  : "border-terminal-border text-terminal-muted hover:border-terminal-green hover:text-terminal-green"
+              }`}
+            >
+              #{i}
+            </button>
+          ))}
         </div>
       )}
 
