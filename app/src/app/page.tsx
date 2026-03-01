@@ -6,6 +6,7 @@ import { OrderPlacementForm } from "@/components/forms/OrderPlacementForm";
 import { MyPositions } from "@/components/positions/MyPositions";
 import { PrivatePositions } from "@/components/positions/PrivatePositions";
 import { DepositPanel } from "@/components/unlink/DepositPanel";
+import { BurnerPanel } from "@/components/unlink/BurnerPanel";
 import { useWalletMode } from "@/lib/walletMode";
 
 type Tab = "lend" | "borrow";
@@ -35,6 +36,7 @@ export default function TradingDashboard() {
         ) : (
           <>
             <DepositPanel />
+            <BurnerPanel />
             <div className="flex-1 min-h-0 overflow-auto">
               <PrivatePositions />
             </div>

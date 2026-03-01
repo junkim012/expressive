@@ -339,3 +339,9 @@ export const ERC20_ABI = [
 export const BASIS_POINTS = 10_000n;
 export const SECONDS_PER_YEAR = 365n * 24n * 3600n;
 export const MAX_UINT256 = 2n ** 256n - 1n;
+
+// Unlink convention for native token (MON on Monad testnet)
+export const NATIVE_TOKEN = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" as `0x${string}`;
+
+// Minimum native MON sent to a burner wallet to cover gas for ~3 contract calls
+export const GAS_RESERVE = 10_000_000_000_000_000n; // 0.01 MON

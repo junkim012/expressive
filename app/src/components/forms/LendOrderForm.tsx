@@ -9,7 +9,7 @@ import {
 } from "wagmi";
 import { useUnlink } from "@unlink-xyz/react";
 import { useAssets } from "@/hooks/useAssets";
-import { CONTRACT_ADDRESS, CONTRACT_ABI, ERC20_ABI, MAX_UINT256 } from "@/lib/contract";
+import { CONTRACT_ADDRESS, CONTRACT_ABI, ERC20_ABI, MAX_UINT256, NATIVE_TOKEN, GAS_RESERVE } from "@/lib/contract";
 import { parsePctToBps, parseLtvToBps, parseDurationToSeconds, parseTokenAmount, formatTokenAmount } from "@/lib/format";
 import { encodeBurnerCall, waitForBurnerTx } from "@/lib/burnerClient";
 import { getNextBurnerIndex, addBurnerForWallet } from "@/lib/burnerStorage";
@@ -87,7 +87,7 @@ export function LendOrderForm() {
   const [error, setError] = useState<string | null>(null);
   const [step, setStep] = useState<
     "idle" | "approving" | "placing" | "done" |
-    "private:deriving" | "private:funding" | "private:approving" | "private:placing"
+    "private:deriving" | "private:gas" | "private:funding" | "private:approving" | "private:placing"
   >("idle");
 
   // Keep a ref so useEffect closures always see the latest step without needing
@@ -188,7 +188,7 @@ export function LendOrderForm() {
 
     const dec = selectedAsset?.decimals ?? 6;
     const amountRaw = parseTokenAmount(form.amount, dec);
-    const shieldedBalance = balances[form.borrowAsset] ?? 0n;
+    const shieldedBalance = balances[form.borrowAsset.toLowerCase()] ?? 0n;
     if (shieldedBalance < amountRaw) {
       return setError(
         `Insufficient Unlink shielded balance (${formatTokenAmount(shieldedBalance.toString(), dec)} ${selectedAsset?.symbol ?? ""}). Deposit more via Unlink.`
@@ -201,8 +201,12 @@ export function LendOrderForm() {
       const burnerIndex = getNextBurnerIndex(address);
       const burner = await createBurner(burnerIndex);
 
-      // Step 2: fund burner from shielded pool
-      // TODO (Q1): burner also needs native MON for gas — currently unresolved.
+      // Step 2: fund burner with native MON for gas from shielded pool
+      setStep("private:gas");
+      const gasResult = await burnerFund(burnerIndex, { token: NATIVE_TOKEN, amount: GAS_RESERVE });
+      await waitForConfirmation(gasResult.relayId);
+
+      // Step 3: fund burner with borrow asset from shielded pool
       setStep("private:funding");
       const fundResult = await burnerFund(burnerIndex, {
         token: form.borrowAsset,
@@ -293,10 +297,11 @@ export function LendOrderForm() {
   const isLoading = isWritePending || isTxLoading || isPrivateLoading;
 
   const PRIVATE_STEP_LABELS: Record<string, string> = {
-    "private:deriving": "1/4 — Deriving burner account...",
-    "private:funding":  "2/4 — Funding from shielded pool...",
-    "private:approving":"3/4 — Approving token spend...",
-    "private:placing":  "4/4 — Placing lend order...",
+    "private:deriving": "1/5 — Deriving burner account...",
+    "private:gas":      "2/5 — Funding burner gas from shielded pool...",
+    "private:funding":  "3/5 — Funding from shielded pool...",
+    "private:approving":"4/5 — Approving token spend...",
+    "private:placing":  "5/5 — Placing lend order...",
   };
 
   if (step === "done") {
@@ -360,7 +365,7 @@ export function LendOrderForm() {
         hint={
           mode === "private" && form.borrowAsset && selectedAsset
             ? `Shielded: ${formatTokenAmount(
-                (balances[form.borrowAsset] ?? 0n).toString(),
+                (balances[form.borrowAsset.toLowerCase()] ?? 0n).toString(),
                 selectedAsset.decimals
               )} ${selectedAsset.symbol}`
             : balanceDisplay

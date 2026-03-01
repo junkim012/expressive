@@ -8,7 +8,7 @@ import {
 } from "wagmi";
 import { useUnlink } from "@unlink-xyz/react";
 import { useAssets } from "@/hooks/useAssets";
-import { CONTRACT_ADDRESS, CONTRACT_ABI, ERC20_ABI, MAX_UINT256 } from "@/lib/contract";
+import { CONTRACT_ADDRESS, CONTRACT_ABI, ERC20_ABI, MAX_UINT256, NATIVE_TOKEN, GAS_RESERVE } from "@/lib/contract";
 import { parsePctToBps, parseLtvToBps, parseDurationToSeconds, parseTokenAmount, formatTokenAmount } from "@/lib/format";
 import { encodeBurnerCall, waitForBurnerTx } from "@/lib/burnerClient";
 import { getNextBurnerIndex, addBurnerForWallet } from "@/lib/burnerStorage";
@@ -99,6 +99,7 @@ export function BorrowOrderForm() {
     | `approving-${number}`
     | "placing"
     | "done"
+    | "private:gas"
     | `private:funding-${number}`
     | `private:approving-${number}`
     | "private:placing";
@@ -252,7 +253,7 @@ export function BorrowOrderForm() {
     for (let i = 0; i < validRows.length; i++) {
       const row = validRows[i];
       const colAsset = assets?.collateralAssets.find((a) => a.address === row.asset);
-      const shielded = balances[row.asset] ?? 0n;
+      const shielded = balances[row.asset.toLowerCase()] ?? 0n;
       const needed = collateralAmounts[i];
       if (shielded < needed) {
         return setError(
@@ -262,12 +263,16 @@ export function BorrowOrderForm() {
     }
 
     try {
-      // Derive burner (index shown as 1/N deriving implicitly)
+      // Derive burner
       const burnerIndex = getNextBurnerIndex(address);
       const burner = await createBurner(burnerIndex);
 
+      // Fund burner with native MON for gas from shielded pool
+      setStep("private:gas");
+      const gasResult = await burnerFund(burnerIndex, { token: NATIVE_TOKEN, amount: GAS_RESERVE });
+      await waitForConfirmation(gasResult.relayId);
+
       // Fund burner for each collateral asset
-      // TODO (Q1): burner also needs native MON for gas — currently unresolved.
       for (let i = 0; i < validRows.length; i++) {
         setStep(`private:funding-${i}`);
         const fundResult = await burnerFund(burnerIndex, {
@@ -351,6 +356,7 @@ export function BorrowOrderForm() {
   }
 
   const isPrivateLoading =
+    step === "private:gas" ||
     step.startsWith("private:funding-") ||
     step.startsWith("private:approving-") ||
     step === "private:placing";
@@ -363,6 +369,7 @@ export function BorrowOrderForm() {
   const totalCollateral = validRowsRef.current.length;
 
   function privateStepLabel(): string {
+    if (step === "private:gas") return "Funding burner gas from shielded pool...";
     if (step.startsWith("private:funding-")) {
       const i = parseInt(step.replace("private:funding-", ""), 10);
       return `Funding collateral ${i + 1}/${totalCollateral} from pool...`;
